@@ -1,0 +1,19 @@
+<resources>
+    <string-array name="loop_entries">
+        <item>5 Sekunden</item>
+        <item>10 Sekunden</item>
+    </string-array>
+    <string-array name="loop_values">
+        <item>5</item>
+        <item>10</item>
+    </string-array>
+
+    <string-array name="lens_entries">
+        <item>Rückkamera</item>
+        <item>Frontkamera</item>
+    </string-array>
+    <string-array name="lens_values">
+        <item>back</item>
+        <item>front</item>
+    </string-array>
+</resources>

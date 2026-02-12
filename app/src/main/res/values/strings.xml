@@ -1,0 +1,10 @@
+<resources>
+    <string name="app_name">Precorder-One</string>
+    <string name="status_idle">Bereit</string>
+    <string name="status_recording">Loop-Aufnahme läuft (RAM-Ringpuffer aktiv)</string>
+    <string name="status_saving">Speichere MP4…</string>
+    <string name="trigger_button">Trigger (Start/Save)</string>
+    <string name="settings_button">Konfiguration</string>
+    <string name="saved_success">Video gespeichert: %1$s</string>
+    <string name="saved_failed">Speichern fehlgeschlagen</string>
+</resources>
