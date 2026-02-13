@@ -89,6 +89,8 @@ class PrecorderEngine(private val context: Context) {
     private var manualExposurePercent: Int = 55
     private var pendingExposureApply: Boolean = true
     private var lastExposureApplyMs: Long = 0L
+    private var pendingFpsApply: Boolean = true
+    private var lastFpsApplyMs: Long = 0L
 
 
     fun getManualExposurePercent(): Int = manualExposurePercent
@@ -106,6 +108,7 @@ class PrecorderEngine(private val context: Context) {
         boundPreviewView = previewView
         boundSettings = settings
         pendingExposureApply = true
+        pendingFpsApply = true
         bindStartMs = System.currentTimeMillis()
         fallbackApplied = false
         forceLowProfile = false
@@ -216,6 +219,10 @@ class PrecorderEngine(private val context: Context) {
         val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
         val id = cameraId ?: return null
         val chars = runCatching { manager.getCameraCharacteristics(id) }.getOrNull() ?: return null
+        return selectFpsRange(chars, targetFps)
+    }
+
+    private fun selectFpsRange(chars: CameraCharacteristics, targetFps: Int): Range<Int>? {
         val ranges = chars.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES).orEmpty()
         if (ranges.isEmpty()) return null
 
@@ -256,6 +263,37 @@ class PrecorderEngine(private val context: Context) {
                 ext.setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO)
                 ext.setCaptureRequestOption(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
             }
+        }
+    }
+
+    private fun maybeApplyRuntimeFpsOverride(cam: Camera, settings: PrecorderSettings) {
+        if (!pendingFpsApply) return
+        val now = System.currentTimeMillis()
+        if (now - lastFpsApplyMs < 500L) return
+        lastFpsApplyMs = now
+        pendingFpsApply = !applyRuntimeFpsOverride(cam, settings)
+    }
+
+    private fun applyRuntimeFpsOverride(cam: Camera, settings: PrecorderSettings): Boolean {
+        val cameraId = runCatching { Camera2CameraInfo.from(cam.cameraInfo).cameraId }
+            .getOrElse { settings.cameraId }
+            ?: return false
+        val chars = runCatching {
+            val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+            manager.getCameraCharacteristics(cameraId)
+        }.getOrNull() ?: return false
+
+        val fpsRange = selectFpsRange(chars, settings.targetFps) ?: return false
+        val options = CaptureRequestOptions.Builder()
+            .setCaptureRequestOption(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, fpsRange)
+            .build()
+
+        return runCatching {
+            Camera2CameraControl.from(cam.cameraControl).setCaptureRequestOptions(options)
+            true
+        }.getOrElse {
+            Log.w(TAG, "FPS override deferred: ${it.message}")
+            false
         }
     }
 
@@ -344,7 +382,10 @@ class PrecorderEngine(private val context: Context) {
     private fun encodeImage(image: ImageProxy, settings: PrecorderSettings) {
         try {
             ensureCodec(image, settings)
-            camera?.let { maybeApplyRuntimeExposureOverride(it, settings) }
+            camera?.let {
+                maybeApplyRuntimeFpsOverride(it, settings)
+                maybeApplyRuntimeExposureOverride(it, settings)
+            }
             val activeCodec = codec ?: return
             queueInput(activeCodec, image)
             drainCodec(activeCodec)
@@ -477,6 +518,7 @@ class PrecorderEngine(private val context: Context) {
         encodedWindowFrames = 0
         encodedFps = 0f
         pendingExposureApply = true
+        pendingFpsApply = true
         formatReady = false
         formatWidth = 0
         formatHeight = 0
