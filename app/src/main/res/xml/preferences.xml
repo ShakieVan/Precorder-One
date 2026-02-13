@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="utf-8"?>
+<PreferenceScreen xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
+
+    <Preference
+        app:key="output_uri"
+        app:title="Speicherort"
+        app:summary="DCIM/Precorder-One" />
+
+    <ListPreference
+        app:key="loop_seconds"
+        app:title="Loop-Speicher"
+        app:summary="Wie lange im RAM behalten"
+        app:entries="@array/loop_entries"
+        app:entryValues="@array/loop_values"
+        app:defaultValue="5" />
+
+    <ListPreference
+        app:key="aspect_ratio"
+        app:title="Aufnahmeformat"
+        app:summary="Seitenverhältnis von Vorschau und Aufnahme"
+        app:entries="@array/aspect_entries"
+        app:entryValues="@array/aspect_values"
+        app:defaultValue="16:9" />
+
+    <ListPreference
+        app:key="target_fps"
+        app:title="Aufnahme-FPS"
+        app:summary="Wird aus den Kamera-FPS-Bereichen befüllt"
+        app:defaultValue="60"
+        app:useSimpleSummaryProvider="true" />
+
+    <ListPreference
+        app:key="playback_fps"
+        app:title="Export-FPS"
+        app:summary="Bildrate in der MP4-Datei"
+        app:entries="@array/playback_entries"
+        app:entryValues="@array/playback_values"
+        app:defaultValue="30"
+        app:useSimpleSummaryProvider="true" />
+
+    <ListPreference
+        app:key="lens_facing"
+        app:title="Kamera"
+        app:entries="@array/lens_entries"
+        app:entryValues="@array/lens_values"
+        app:defaultValue="back" />
+
+    <ListPreference
+        app:key="camera_id"
+        app:title="Hardware-Kamera-ID"
+        app:summary="Spezifische Kamera auswählen"
+        app:useSimpleSummaryProvider="true" />
+
+    <SwitchPreferenceCompat
+        app:key="torch"
+        app:title="Kameralicht"
+        app:defaultValue="false" />
+
+    <SeekBarPreference
+        app:key="digital_zoom"
+        app:title="Digitaler Zoom"
+        app:min="1"
+        android:max="8"
+        app:showSeekBarValue="true"
+        app:defaultValue="1" />
+
+    <SeekBarPreference
+        app:key="analog_zoom"
+        app:title="Analoger Zoom (falls verfügbar)"
+        app:min="1"
+        android:max="4"
+        app:showSeekBarValue="true"
+        app:defaultValue="1" />
+
+    <SwitchPreferenceCompat
+        app:key="volume_trigger"
+        app:title="Vol-Down als Trigger"
+        app:defaultValue="true" />
+
+</PreferenceScreen>
