@@ -27,6 +27,7 @@ class MainActivity : AppCompatActivity() {
     private var isSaving = false
     private var bufferFill = 0f
     private var currentPhysicalRotation = Surface.ROTATION_0
+    private var measuredFps = 0f
 
     private val permissionsLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -46,6 +47,12 @@ class MainActivity : AppCompatActivity() {
             runOnUiThread {
                 bufferFill = progress
                 updateBufferUi()
+            }
+        }
+        engine.onMeasuredFpsChanged = { fps ->
+            runOnUiThread {
+                measuredFps = fps
+                binding.debugFpsText.text = getString(R.string.debug_fps, fps)
             }
         }
 
@@ -116,6 +123,8 @@ class MainActivity : AppCompatActivity() {
         val ready = bufferFill >= 0.98f
         binding.btnTrigger.isEnabled = ready && !isSaving
         binding.btnTrigger.alpha = if (ready && !isSaving) 1f else 0.4f
+
+        binding.debugFpsText.text = getString(R.string.debug_fps, measuredFps)
 
         binding.statusText.text = when {
             isSaving -> getString(R.string.status_saving)

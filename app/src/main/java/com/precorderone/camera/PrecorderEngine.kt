@@ -14,11 +14,11 @@ import android.net.Uri
 import android.provider.MediaStore
 import android.util.Log
 import android.util.Range
+import android.util.Size
 import android.view.Surface
 import androidx.camera.camera2.interop.Camera2CameraInfo
 import androidx.camera.camera2.interop.Camera2Interop
 import androidx.camera.camera2.interop.ExperimentalCamera2Interop
-import androidx.camera.core.AspectRatio
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
@@ -52,12 +52,17 @@ class PrecorderEngine(private val context: Context) {
     private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     var onBufferFillChanged: ((Float) -> Unit)? = null
+    var onMeasuredFpsChanged: ((Float) -> Unit)? = null
 
     private var retentionUs: Long = 5_000_000
     private var currentConfigKey: String? = null
     private var formatWidth = 0
     private var formatHeight = 0
     private var formatReady = false
+
+    private var lastSamplePtsUs: Long = -1L
+    private var fpsWindowStartPtsUs: Long = -1L
+    private var fpsWindowFrames: Int = 0
 
     fun bind(owner: LifecycleOwner, previewView: PreviewView, settings: PrecorderSettings) {
         retentionUs = settings.loopSeconds * 1_000_000L
@@ -143,16 +148,16 @@ class PrecorderEngine(private val context: Context) {
 
     private fun Preview.Builder.applyAspect(aspect: String): Preview.Builder {
         when (aspect) {
-            "4:3" -> setTargetAspectRatio(AspectRatio.RATIO_4_3)
-            else -> setTargetAspectRatio(AspectRatio.RATIO_16_9)
+            "4:3" -> setTargetResolution(Size(960, 720))
+            else -> setTargetResolution(Size(1280, 720))
         }
         return this
     }
 
     private fun ImageAnalysis.Builder.applyAspect(aspect: String): ImageAnalysis.Builder {
         when (aspect) {
-            "4:3" -> setTargetAspectRatio(AspectRatio.RATIO_4_3)
-            else -> setTargetAspectRatio(AspectRatio.RATIO_16_9)
+            "4:3" -> setTargetResolution(Size(960, 720))
+            else -> setTargetResolution(Size(1280, 720))
         }
         return this
     }
@@ -245,6 +250,7 @@ class PrecorderEngine(private val context: Context) {
                             )
                         )
                         notifyBufferProgress(getBufferFillRatio())
+                        updateMeasuredFps(info.presentationTimeUs)
                     }
                     codec.releaseOutputBuffer(outIndex, false)
                 }
@@ -317,6 +323,10 @@ class PrecorderEngine(private val context: Context) {
             notifyBufferProgress(0f)
         }
         encoderOutputFormat = null
+        lastSamplePtsUs = -1L
+        fpsWindowStartPtsUs = -1L
+        fpsWindowFrames = 0
+        onMeasuredFpsChanged?.invoke(0f)
         formatReady = false
         formatWidth = 0
         formatHeight = 0
@@ -327,6 +337,27 @@ class PrecorderEngine(private val context: Context) {
 
     private fun notifyBufferProgress(value: Float) {
         onBufferFillChanged?.invoke(value.coerceIn(0f, 1f))
+    }
+
+
+    private fun updateMeasuredFps(currentPtsUs: Long) {
+        if (lastSamplePtsUs > 0 && currentPtsUs <= lastSamplePtsUs) return
+        lastSamplePtsUs = currentPtsUs
+
+        if (fpsWindowStartPtsUs < 0) {
+            fpsWindowStartPtsUs = currentPtsUs
+            fpsWindowFrames = 0
+            return
+        }
+
+        fpsWindowFrames += 1
+        val elapsedUs = currentPtsUs - fpsWindowStartPtsUs
+        if (elapsedUs >= 1_000_000L) {
+            val fps = fpsWindowFrames * 1_000_000f / elapsedUs.toFloat()
+            onMeasuredFpsChanged?.invoke(fps)
+            fpsWindowStartPtsUs = currentPtsUs
+            fpsWindowFrames = 0
+        }
     }
 
     private fun computeOrientationHint(settings: PrecorderSettings, deviceSurfaceRotation: Int): Int {

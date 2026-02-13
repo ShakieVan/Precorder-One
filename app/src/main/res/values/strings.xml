@@ -9,4 +9,6 @@
     <string name="settings_button">Konfiguration</string>
     <string name="saved_success">Video gespeichert: %1$s</string>
     <string name="saved_failed">Speichern fehlgeschlagen oder Puffer noch nicht voll</string>
+    <string name="debug_fps_initial">FPS: --.-</string>
+    <string name="debug_fps">FPS gemessen: %.1f</string>
 </resources>

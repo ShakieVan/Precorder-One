@@ -49,6 +49,21 @@
         android:src="@android:drawable/ic_menu_manage"
         android:tint="@android:color/white" />
 
+
+    <TextView
+        android:id="@+id/debugFpsText"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|end"
+        android:layout_marginTop="60dp"
+        android:layout_marginEnd="12dp"
+        android:background="#66000000"
+        android:paddingHorizontal="8dp"
+        android:paddingVertical="4dp"
+        android:text="@string/debug_fps_initial"
+        android:textColor="#7CFC00"
+        android:textSize="11sp" />
+
     <FrameLayout
         android:id="@+id/orientationIndicatorRing"
         android:layout_width="84dp"
