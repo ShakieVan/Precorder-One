@@ -53,6 +53,8 @@ class PrecorderEngine(private val context: Context) {
 
     var onBufferFillChanged: ((Float) -> Unit)? = null
     var onMeasuredFpsChanged: ((Float) -> Unit)? = null
+    var onDebugStatsChanged: ((Float, Float, Float) -> Unit)? = null
+    var onProfileFallback: ((String) -> Unit)? = null
 
     private var retentionUs: Long = 5_000_000
     private var currentConfigKey: String? = null
@@ -64,7 +66,29 @@ class PrecorderEngine(private val context: Context) {
     private var fpsWindowStartPtsUs: Long = -1L
     private var fpsWindowFrames: Int = 0
 
+    private var inputWindowStartUs: Long = -1L
+    private var inputWindowFrames: Int = 0
+    private var inputFps: Float = 0f
+
+    private var encodedWindowStartUs: Long = -1L
+    private var encodedWindowFrames: Int = 0
+    private var encodedFps: Float = 0f
+
+    private var fallbackApplied = false
+    private var bindStartMs: Long = 0L
+    private var forceLowProfile = false
+    private var boundOwner: LifecycleOwner? = null
+    private var boundPreviewView: PreviewView? = null
+    private var boundSettings: PrecorderSettings? = null
+
     fun bind(owner: LifecycleOwner, previewView: PreviewView, settings: PrecorderSettings) {
+        boundOwner = owner
+        boundPreviewView = previewView
+        boundSettings = settings
+        bindStartMs = System.currentTimeMillis()
+        fallbackApplied = false
+        forceLowProfile = false
+
         retentionUs = (settings.loopSeconds + 1) * 1_000_000L
         val key = "${settings.cameraId}|${settings.lensFacing}|${settings.targetFps}|${settings.aspectRatio}"
 
@@ -148,16 +172,16 @@ class PrecorderEngine(private val context: Context) {
 
     private fun Preview.Builder.applyAspect(aspect: String): Preview.Builder {
         when (aspect) {
-            "4:3" -> setTargetResolution(Size(640, 480))
-            else -> setTargetResolution(Size(854, 480))
+            "4:3" -> setTargetResolution(if (forceLowProfile) Size(480, 360) else Size(640, 480))
+            else -> setTargetResolution(if (forceLowProfile) Size(640, 360) else Size(854, 480))
         }
         return this
     }
 
     private fun ImageAnalysis.Builder.applyAspect(aspect: String): ImageAnalysis.Builder {
         when (aspect) {
-            "4:3" -> setTargetResolution(Size(640, 480))
-            else -> setTargetResolution(Size(854, 480))
+            "4:3" -> setTargetResolution(if (forceLowProfile) Size(480, 360) else Size(640, 480))
+            else -> setTargetResolution(if (forceLowProfile) Size(640, 360) else Size(854, 480))
         }
         return this
     }
@@ -228,7 +252,7 @@ class PrecorderEngine(private val context: Context) {
         inputBuffer.put(yuv)
         val ptsUs = image.imageInfo.timestamp / 1_000
         codec.queueInputBuffer(inputIndex, 0, yuv.size, ptsUs, 0)
-        updateMeasuredFps(ptsUs)
+        updateInputStats(ptsUs)
     }
 
     private fun drainCodec(codec: MediaCodec) {
@@ -252,6 +276,7 @@ class PrecorderEngine(private val context: Context) {
                             )
                         )
                         notifyBufferProgress(getBufferFillRatio())
+                        updateEncodedStats(info.presentationTimeUs)
                     }
                     codec.releaseOutputBuffer(outIndex, false)
                 }
@@ -330,6 +355,13 @@ class PrecorderEngine(private val context: Context) {
         fpsWindowStartPtsUs = -1L
         fpsWindowFrames = 0
         onMeasuredFpsChanged?.invoke(0f)
+        onDebugStatsChanged?.invoke(0f, 0f, 0f)
+        inputWindowStartUs = -1L
+        inputWindowFrames = 0
+        inputFps = 0f
+        encodedWindowStartUs = -1L
+        encodedWindowFrames = 0
+        encodedFps = 0f
         formatReady = false
         formatWidth = 0
         formatHeight = 0
@@ -342,6 +374,69 @@ class PrecorderEngine(private val context: Context) {
         onBufferFillChanged?.invoke(value.coerceIn(0f, 1f))
     }
 
+
+    private fun updateInputStats(currentPtsUs: Long) {
+        updateMeasuredFps(currentPtsUs)
+
+        if (inputWindowStartUs < 0L) {
+            inputWindowStartUs = currentPtsUs
+            inputWindowFrames = 0
+            return
+        }
+
+        inputWindowFrames += 1
+        val elapsedUs = currentPtsUs - inputWindowStartUs
+        if (elapsedUs >= 1_000_000L) {
+            inputFps = inputWindowFrames * 1_000_000f / elapsedUs.toFloat()
+            inputWindowStartUs = currentPtsUs
+            inputWindowFrames = 0
+            publishDebugStats()
+            maybeAutoFallback()
+        }
+    }
+
+    private fun updateEncodedStats(currentPtsUs: Long) {
+        if (encodedWindowStartUs < 0L) {
+            encodedWindowStartUs = currentPtsUs
+            encodedWindowFrames = 0
+            return
+        }
+
+        encodedWindowFrames += 1
+        val elapsedUs = currentPtsUs - encodedWindowStartUs
+        if (elapsedUs >= 1_000_000L) {
+            encodedFps = encodedWindowFrames * 1_000_000f / elapsedUs.toFloat()
+            encodedWindowStartUs = currentPtsUs
+            encodedWindowFrames = 0
+            publishDebugStats()
+        }
+    }
+
+    private fun publishDebugStats() {
+        val dropPercent = if (inputFps <= 0.1f) 0f else ((inputFps - encodedFps) / inputFps * 100f).coerceIn(0f, 100f)
+        onDebugStatsChanged?.invoke(inputFps, encodedFps, dropPercent)
+    }
+
+    private fun maybeAutoFallback() {
+        val settings = boundSettings ?: return
+        if (fallbackApplied || settings.targetFps < 120) return
+        val runningMs = System.currentTimeMillis() - bindStartMs
+        if (runningMs < 3_000) return
+        if (inputFps >= settings.targetFps * 0.55f) return
+
+        fallbackApplied = true
+        forceLowProfile = true
+        onProfileFallback?.invoke("Auto-Fallback aktiv: hohe FPS nicht stabil, reduziere Lastprofil")
+
+        val owner = boundOwner
+        val preview = boundPreviewView
+        if (owner != null && preview != null) {
+            ContextCompat.getMainExecutor(context).execute {
+                resetEncodingState(clearBuffer = true)
+                bindInternal(owner, preview, settings.copy(targetFps = 60))
+            }
+        }
+    }
 
     private fun updateMeasuredFps(currentPtsUs: Long) {
         if (lastSamplePtsUs > 0 && currentPtsUs <= lastSamplePtsUs) return
