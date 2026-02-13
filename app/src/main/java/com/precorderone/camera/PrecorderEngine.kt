@@ -8,25 +8,24 @@ import android.media.MediaCodecInfo
 import android.media.MediaFormat
 import android.media.MediaMuxer
 import android.net.Uri
-import android.os.Environment
 import android.provider.MediaStore
 import android.util.Log
+import androidx.camera.camera2.interop.Camera2CameraInfo
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
-import androidx.camera.camera2.interop.Camera2CameraInfo
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
+import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.LifecycleOwner
 import com.precorderone.data.PrecorderSettings
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
-import java.io.File
 import java.nio.ByteBuffer
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -36,6 +35,7 @@ class PrecorderEngine(private val context: Context) {
     private var cameraProvider: ProcessCameraProvider? = null
     private var analysis: ImageAnalysis? = null
     private var codec: MediaCodec? = null
+    private var encoderOutputFormat: MediaFormat? = null
     private var ringBuffer: EncodedFrameRingBuffer = EncodedFrameRingBuffer(5_000_000)
     private val analyzerExecutor: ExecutorService = Executors.newSingleThreadExecutor()
     private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -166,8 +166,11 @@ class PrecorderEngine(private val context: Context) {
                     codec.releaseOutputBuffer(outIndex, false)
                 }
 
+                outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                    encoderOutputFormat = codec.outputFormat
+                }
+
                 outIndex == MediaCodec.INFO_TRY_AGAIN_LATER -> return
-                outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> return
                 else -> return
             }
         }
@@ -175,47 +178,46 @@ class PrecorderEngine(private val context: Context) {
 
     fun exportClip(settings: PrecorderSettings, onDone: (Uri?) -> Unit) {
         ioScope.launch {
-            val frames = ringBuffer.snapshot()
+            val frames = ringBuffer.snapshot().filterNot { it.isConfig }
             if (frames.isEmpty()) {
                 onDone(null)
                 return@launch
             }
-            val uri = createOutputUri() ?: run {
+            val format = encoderOutputFormat
+            if (format == null) {
                 onDone(null)
                 return@launch
             }
 
-            val path = uriToPath(uri)
-            if (path == null) {
+            val output = createOutputTarget(settings) ?: run {
                 onDone(null)
                 return@launch
             }
-            runCatching {
-                val muxer = MediaMuxer(path, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
-                val outputFormat = MediaFormat.createVideoFormat(MIME_TYPE, formatWidth, formatHeight).apply {
-                    setInteger(MediaFormat.KEY_FRAME_RATE, settings.playbackFps)
-                    setInteger(MediaFormat.KEY_BIT_RATE, estimateBitrate(settings.playbackFps, formatWidth, formatHeight))
-                }
-                val track = muxer.addTrack(outputFormat)
-                muxer.start()
 
-                val firstPts = frames.first().presentationTimeUs
-                frames.forEach { frame ->
-                    if (frame.isConfig) return@forEach
-                    val info = MediaCodec.BufferInfo().apply {
-                        offset = 0
-                        size = frame.data.size
-                        presentationTimeUs = frame.presentationTimeUs - firstPts
-                        flags = if ((frame.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0) MediaCodec.BUFFER_FLAG_KEY_FRAME else 0
+            val success = runCatching {
+                val outputFd = output.fileDescriptor ?: error("No output file descriptor")
+                MediaMuxer(outputFd, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4).useMuxer { muxer ->
+                    val track = muxer.addTrack(format)
+                    muxer.start()
+                    val firstPts = frames.first().presentationTimeUs
+                    frames.forEach { frame ->
+                        val info = MediaCodec.BufferInfo().apply {
+                            offset = 0
+                            size = frame.data.size
+                            presentationTimeUs = frame.presentationTimeUs - firstPts
+                            flags = if ((frame.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0) MediaCodec.BUFFER_FLAG_KEY_FRAME else 0
+                        }
+                        muxer.writeSampleData(track, frame.asByteBuffer(), info)
                     }
-                    muxer.writeSampleData(track, frame.asByteBuffer(), info)
                 }
-                muxer.stop()
-                muxer.release()
+                output.markCompleted()
+                true
             }.onFailure {
+                output.cleanupOnFailure()
                 Log.e(TAG, "Export failed", it)
-            }
-            onDone(uri)
+            }.getOrDefault(false)
+
+            onDone(if (success) output.uri else null)
         }
     }
 
@@ -226,33 +228,39 @@ class PrecorderEngine(private val context: Context) {
         codec?.release()
     }
 
-    private fun createOutputUri(): Uri? {
-        val resolver = context.contentResolver
+    private fun createOutputTarget(settings: PrecorderSettings): OutputTarget? {
         val fileName = "precorder_${System.currentTimeMillis()}.mp4"
+        val resolver = context.contentResolver
 
-        val relativePath = "DCIM/Precorder-One"
+        settings.outputFolderUri?.let { folderUriString ->
+            runCatching {
+                val folder = DocumentFile.fromTreeUri(context, Uri.parse(folderUriString)) ?: return@runCatching null
+                val file = folder.createFile("video/mp4", fileName) ?: return@runCatching null
+                val pfd = resolver.openFileDescriptor(file.uri, "w") ?: return@runCatching null
+                return OutputTarget(uri = file.uri, fileDescriptor = pfd.fileDescriptor, closeable = pfd)
+            }.getOrNull()?.let { return it }
+        }
+
         val values = ContentValues().apply {
             put(MediaStore.Video.Media.DISPLAY_NAME, fileName)
             put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
-            put(MediaStore.Video.Media.RELATIVE_PATH, relativePath)
+            put(MediaStore.Video.Media.RELATIVE_PATH, "DCIM/Precorder-One")
+            put(MediaStore.Video.Media.IS_PENDING, 1)
         }
-
-        return resolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
-    }
-
-    private fun uriToPath(uri: Uri): String? {
-        if (uri.scheme == "file") return uri.path
-        val projection = arrayOf(MediaStore.Video.Media.DATA)
-        context.contentResolver.query(uri, projection, null, null, null)?.use { cursor ->
-            val idx = cursor.getColumnIndex(MediaStore.Video.Media.DATA)
-            if (idx >= 0 && cursor.moveToFirst()) {
-                return cursor.getString(idx)
+        val uri = resolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values) ?: return null
+        val pfd = resolver.openFileDescriptor(uri, "rw") ?: return null
+        return OutputTarget(
+            uri = uri,
+            fileDescriptor = pfd.fileDescriptor,
+            closeable = pfd,
+            finalize = {
+                val publish = ContentValues().apply { put(MediaStore.Video.Media.IS_PENDING, 0) }
+                resolver.update(uri, publish, null, null)
+            },
+            cleanup = {
+                resolver.delete(uri, null, null)
             }
-        }
-
-        val fallbackDir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM), "Precorder-One")
-        if (!fallbackDir.exists()) fallbackDir.mkdirs()
-        return File(fallbackDir, "precorder_${System.currentTimeMillis()}.mp4").absolutePath
+        )
     }
 
     private fun yuv420888ToNv12(image: ImageProxy): ByteArray {
@@ -265,10 +273,8 @@ class PrecorderEngine(private val context: Context) {
         val uvSize = ySize / 2
         val out = ByteArray(ySize + uvSize)
 
-        // Copy Y
         copyPlane(yPlane.buffer, yPlane.rowStride, yPlane.pixelStride, image.width, image.height, out, 0)
 
-        // Interleave UV (NV12)
         val chromaHeight = image.height / 2
         val chromaWidth = image.width / 2
         var offset = ySize
@@ -308,8 +314,35 @@ class PrecorderEngine(private val context: Context) {
         return (bpp * fps * width * height).toInt().coerceIn(4_000_000, 80_000_000)
     }
 
+    private class OutputTarget(
+        val uri: Uri,
+        val fileDescriptor: java.io.FileDescriptor? = null,
+        val closeable: AutoCloseable? = null,
+        val finalize: (() -> Unit)? = null,
+        val cleanup: (() -> Unit)? = null
+    ) {
+        fun markCompleted() {
+            closeable?.close()
+            finalize?.invoke()
+        }
+
+        fun cleanupOnFailure() {
+            runCatching { closeable?.close() }
+            runCatching { cleanup?.invoke() }
+        }
+    }
+
     companion object {
         private const val TAG = "PrecorderEngine"
         private const val MIME_TYPE = "video/avc"
+    }
+}
+
+private inline fun MediaMuxer.useMuxer(block: (MediaMuxer) -> Unit) {
+    try {
+        block(this)
+    } finally {
+        runCatching { stop() }
+        runCatching { release() }
     }
 }
