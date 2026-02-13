@@ -53,7 +53,8 @@ class MainActivity : AppCompatActivity() {
         engine.onMeasuredFpsChanged = { fps ->
             runOnUiThread {
                 measuredFps = fps
-                binding.debugFpsText.text = getString(R.string.debug_fps, fps)
+                val target = settingsRepository.load().targetFps
+                binding.debugFpsText.text = getString(R.string.debug_fps, fps, target)
             }
         }
 
@@ -102,7 +103,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun onTrigger() {
         val settings = settingsRepository.load()
-        if (!isRecordingLoop || isSaving || !triggerArmed) return
+        if (!isRecordingLoop || isSaving) return
 
         isSaving = true
         updateBufferUi()
@@ -125,10 +126,11 @@ class MainActivity : AppCompatActivity() {
         if (bufferFill >= 0.98f) triggerArmed = true
         if (bufferFill < 0.90f) triggerArmed = false
         val ready = triggerArmed
-        binding.btnTrigger.isEnabled = ready && !isSaving
-        binding.btnTrigger.alpha = if (ready && !isSaving) 1f else 0.4f
+        binding.btnTrigger.isEnabled = !isSaving
+        binding.btnTrigger.alpha = if (!isSaving) 1f else 0.4f
 
-        binding.debugFpsText.text = getString(R.string.debug_fps, measuredFps)
+        val target = settingsRepository.load().targetFps
+        binding.debugFpsText.text = getString(R.string.debug_fps, measuredFps, target)
 
         binding.statusText.text = when {
             isSaving -> getString(R.string.status_saving)

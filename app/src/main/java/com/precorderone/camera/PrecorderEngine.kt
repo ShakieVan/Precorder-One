@@ -148,16 +148,16 @@ class PrecorderEngine(private val context: Context) {
 
     private fun Preview.Builder.applyAspect(aspect: String): Preview.Builder {
         when (aspect) {
-            "4:3" -> setTargetResolution(Size(960, 720))
-            else -> setTargetResolution(Size(1280, 720))
+            "4:3" -> setTargetResolution(Size(640, 480))
+            else -> setTargetResolution(Size(854, 480))
         }
         return this
     }
 
     private fun ImageAnalysis.Builder.applyAspect(aspect: String): ImageAnalysis.Builder {
         when (aspect) {
-            "4:3" -> setTargetResolution(Size(960, 720))
-            else -> setTargetResolution(Size(1280, 720))
+            "4:3" -> setTargetResolution(Size(640, 480))
+            else -> setTargetResolution(Size(854, 480))
         }
         return this
     }
@@ -265,12 +265,6 @@ class PrecorderEngine(private val context: Context) {
 
     fun exportClip(settings: PrecorderSettings, deviceSurfaceRotation: Int, onDone: (Uri?) -> Unit) {
         ioScope.launch {
-            val fillRatio = getBufferFillRatio()
-            if (fillRatio < 0.98f) {
-                onDone(null)
-                return@launch
-            }
-
             val allFrames = ringBuffer.snapshot().filterNot { it.isConfig }
             val format = encoderOutputFormat
             if (allFrames.size < 8 || format == null) {
