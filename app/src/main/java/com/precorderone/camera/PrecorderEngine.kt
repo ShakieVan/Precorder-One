@@ -87,21 +87,25 @@ class PrecorderEngine(private val context: Context) {
     private var boundPreviewView: PreviewView? = null
     private var boundSettings: PrecorderSettings? = null
     private var manualExposurePercent: Int = 55
+    private var pendingExposureApply: Boolean = true
+    private var lastExposureApplyMs: Long = 0L
 
 
     fun getManualExposurePercent(): Int = manualExposurePercent
 
     fun setManualExposurePercent(percent: Int) {
         manualExposurePercent = percent.coerceIn(20, 100)
+        pendingExposureApply = true
         val cam = camera ?: return
         val settings = boundSettings ?: return
-        applyRuntimeExposureOverride(cam, settings)
+        maybeApplyRuntimeExposureOverride(cam, settings)
     }
 
     fun bind(owner: LifecycleOwner, previewView: PreviewView, settings: PrecorderSettings) {
         boundOwner = owner
         boundPreviewView = previewView
         boundSettings = settings
+        pendingExposureApply = true
         bindStartMs = System.currentTimeMillis()
         fallbackApplied = false
         forceLowProfile = false
@@ -188,7 +192,6 @@ class PrecorderEngine(private val context: Context) {
         }
         toggleTorch(settings.torchEnabled)
         applyZoom(settings.digitalZoomRatio)
-        camera?.let { applyRuntimeExposureOverride(it, settings) }
     }
 
     @Suppress("DEPRECATION")
@@ -256,14 +259,22 @@ class PrecorderEngine(private val context: Context) {
         }
     }
 
-    private fun applyRuntimeExposureOverride(cam: Camera, settings: PrecorderSettings) {
-        if (settings.targetFps < 60) return
-        val cameraId = settings.cameraId ?: return
+    private fun maybeApplyRuntimeExposureOverride(cam: Camera, settings: PrecorderSettings) {
+        if (!pendingExposureApply) return
+        val now = System.currentTimeMillis()
+        if (now - lastExposureApplyMs < 250L) return
+        lastExposureApplyMs = now
+        pendingExposureApply = !applyRuntimeExposureOverride(cam, settings)
+    }
+
+    private fun applyRuntimeExposureOverride(cam: Camera, settings: PrecorderSettings): Boolean {
+        if (settings.targetFps < 60) return true
+        val cameraId = settings.cameraId ?: return false
         val chars = runCatching {
             val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
             manager.getCameraCharacteristics(cameraId)
-        }.getOrNull() ?: return
-        if (!supportsManualSensor(chars)) return
+        }.getOrNull() ?: return false
+        if (!supportsManualSensor(chars)) return true
 
         val frameDurationNs = (1_000_000_000L / settings.targetFps.coerceAtLeast(1))
         val exposureNs = (frameDurationNs * manualExposurePercent.coerceIn(20, 100) / 100L).coerceIn(500_000L, frameDurationNs)
@@ -279,7 +290,13 @@ class PrecorderEngine(private val context: Context) {
             .setCaptureRequestOption(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
             .build()
 
-        runCatching { Camera2CameraControl.from(cam.cameraControl).setCaptureRequestOptions(options) }
+        return runCatching {
+            Camera2CameraControl.from(cam.cameraControl).setCaptureRequestOptions(options)
+            true
+        }.getOrElse {
+            Log.w(TAG, "Exposure override deferred: ${it.message}")
+            false
+        }
     }
 
     private fun supportsManualSensor(chars: CameraCharacteristics): Boolean {
@@ -325,6 +342,7 @@ class PrecorderEngine(private val context: Context) {
     private fun encodeImage(image: ImageProxy, settings: PrecorderSettings) {
         try {
             ensureCodec(image, settings)
+            camera?.let { maybeApplyRuntimeExposureOverride(it, settings) }
             val activeCodec = codec ?: return
             queueInput(activeCodec, image)
             drainCodec(activeCodec)
@@ -456,6 +474,7 @@ class PrecorderEngine(private val context: Context) {
         encodedWindowStartUs = -1L
         encodedWindowFrames = 0
         encodedFps = 0f
+        pendingExposureApply = true
         formatReady = false
         formatWidth = 0
         formatHeight = 0
