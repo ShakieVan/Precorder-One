@@ -244,25 +244,16 @@ class PrecorderEngine(private val context: Context) {
             manager.getCameraCharacteristics(cameraId)
         }.getOrNull() ?: return
 
-        // Stabilere FPS unter schwierigen Lichtbedingungen: bei hohen Ziel-FPS Framezeit priorisieren.
+        val previewExt = Camera2Interop.Extender(previewBuilder)
+        val analysisExt = Camera2Interop.Extender(analysisBuilder)
+        listOf(previewExt, analysisExt).forEach { ext ->
+            ext.setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO)
+            ext.setCaptureRequestOption(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
+            ext.setCaptureRequestOption(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_AUTO)
+        }
+
         if (targetFps >= 60 && supportsManualSensor(chars)) {
-            val previewExt = Camera2Interop.Extender(previewBuilder)
-            val analysisExt = Camera2Interop.Extender(analysisBuilder)
-            listOf(previewExt, analysisExt).forEach { ext ->
-                ext.setCaptureRequestOption(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
-                ext.setCaptureRequestOption(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_AUTO)
-                ext.setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO)
-                ext.setCaptureRequestOption(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
-            }
             onProfileFallback?.invoke("FPS-Priorität aktiv: Belichtung manuell über Slider")
-        } else {
-            val previewExt = Camera2Interop.Extender(previewBuilder)
-            val analysisExt = Camera2Interop.Extender(analysisBuilder)
-            listOf(previewExt, analysisExt).forEach { ext ->
-                ext.setCaptureRequestOption(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
-                ext.setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO)
-                ext.setCaptureRequestOption(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
-            }
         }
     }
 
@@ -283,8 +274,12 @@ class PrecorderEngine(private val context: Context) {
             manager.getCameraCharacteristics(cameraId)
         }.getOrNull() ?: return false
 
+        val manualMode = settings.targetFps >= 60 && supportsManualSensor(chars)
+        if (manualMode) return true
+
         val fpsRange = selectFpsRange(chars, settings.targetFps) ?: return false
         val options = CaptureRequestOptions.Builder()
+            .setCaptureRequestOption(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
             .setCaptureRequestOption(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, fpsRange)
             .build()
 
@@ -306,7 +301,6 @@ class PrecorderEngine(private val context: Context) {
     }
 
     private fun applyRuntimeExposureOverride(cam: Camera, settings: PrecorderSettings): Boolean {
-        if (settings.targetFps < 60) return true
         val cameraId = runCatching { Camera2CameraInfo.from(cam.cameraInfo).cameraId }
             .getOrElse { settings.cameraId }
             ?: return false
@@ -314,19 +308,19 @@ class PrecorderEngine(private val context: Context) {
             val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
             manager.getCameraCharacteristics(cameraId)
         }.getOrNull() ?: return false
-        if (!supportsManualSensor(chars)) return true
+        if (!(settings.targetFps >= 60 && supportsManualSensor(chars))) return true
 
         val frameDurationNs = (1_000_000_000L / settings.targetFps.coerceAtLeast(1))
         val exposureNs = (frameDurationNs * manualExposurePercent.coerceIn(20, 100) / 100L).coerceIn(500_000L, frameDurationNs)
         val sensitivity = chooseIso(chars)
 
         val options = CaptureRequestOptions.Builder()
+            .setCaptureRequestOption(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_OFF)
             .setCaptureRequestOption(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
+            .setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
             .setCaptureRequestOption(CaptureRequest.SENSOR_FRAME_DURATION, frameDurationNs)
             .setCaptureRequestOption(CaptureRequest.SENSOR_EXPOSURE_TIME, exposureNs)
             .setCaptureRequestOption(CaptureRequest.SENSOR_SENSITIVITY, sensitivity)
-            .setCaptureRequestOption(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_AUTO)
-            .setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO)
             .setCaptureRequestOption(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
             .build()
 
