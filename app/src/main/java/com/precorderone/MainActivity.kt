@@ -11,6 +11,7 @@ import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import androidx.camera.view.PreviewView
 import com.precorderone.camera.PrecorderEngine
 import com.precorderone.data.SettingsRepository
 import com.precorderone.databinding.ActivityMainBinding
@@ -102,6 +103,11 @@ class MainActivity : AppCompatActivity() {
 
         binding.btnTrigger.setOnClickListener { onTrigger() }
         binding.btnSettings.setOnClickListener { startActivity(Intent(this, SettingsActivity::class.java)) }
+        binding.previewView.previewStreamState.observe(this) { state ->
+            if (state == PreviewView.StreamState.STREAMING) {
+                engine.setManualExposurePercent(exposurePercent)
+            }
+        }
 
         requestPermissionsIfNeeded()
     }
@@ -127,7 +133,6 @@ class MainActivity : AppCompatActivity() {
     private fun bindCamera() {
         val settings = settingsRepository.load()
         engine.bind(this, binding.previewView, settings)
-        engine.setManualExposurePercent(exposurePercent)
         isRecordingLoop = true
         bufferFill = 0f
         isSaving = false
