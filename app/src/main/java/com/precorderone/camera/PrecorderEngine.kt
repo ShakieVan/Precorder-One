@@ -269,7 +269,9 @@ class PrecorderEngine(private val context: Context) {
 
     private fun applyRuntimeExposureOverride(cam: Camera, settings: PrecorderSettings): Boolean {
         if (settings.targetFps < 60) return true
-        val cameraId = settings.cameraId ?: return false
+        val cameraId = runCatching { Camera2CameraInfo.from(cam.cameraInfo).cameraId }
+            .getOrElse { settings.cameraId }
+            ?: return false
         val chars = runCatching {
             val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
             manager.getCameraCharacteristics(cameraId)
