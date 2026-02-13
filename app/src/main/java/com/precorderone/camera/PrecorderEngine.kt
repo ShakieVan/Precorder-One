@@ -236,22 +236,15 @@ class PrecorderEngine(private val context: Context) {
 
         // Stabilere FPS unter schwierigen Lichtbedingungen: bei hohen Ziel-FPS Framezeit priorisieren.
         if (targetFps >= 60 && supportsManualSensor(chars)) {
-            val frameDurationNs = (1_000_000_000L / targetFps.coerceAtLeast(1))
-            val exposureNs = (frameDurationNs * (manualExposurePercent.coerceIn(20, 100)) / 100L).coerceIn(500_000L, frameDurationNs)
-            val sensitivity = chooseIso(chars)
-
             val previewExt = Camera2Interop.Extender(previewBuilder)
             val analysisExt = Camera2Interop.Extender(analysisBuilder)
             listOf(previewExt, analysisExt).forEach { ext ->
                 ext.setCaptureRequestOption(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
-                ext.setCaptureRequestOption(CaptureRequest.SENSOR_FRAME_DURATION, frameDurationNs)
-                ext.setCaptureRequestOption(CaptureRequest.SENSOR_EXPOSURE_TIME, exposureNs)
-                ext.setCaptureRequestOption(CaptureRequest.SENSOR_SENSITIVITY, sensitivity)
                 ext.setCaptureRequestOption(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_AUTO)
                 ext.setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO)
                 ext.setCaptureRequestOption(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
             }
-            onProfileFallback?.invoke("FPS-Priorität aktiv: fixe Belichtungszeit für stabilere Bildrate")
+            onProfileFallback?.invoke("FPS-Priorität aktiv: Belichtung manuell über Slider")
         } else {
             val previewExt = Camera2Interop.Extender(previewBuilder)
             val analysisExt = Camera2Interop.Extender(analysisBuilder)

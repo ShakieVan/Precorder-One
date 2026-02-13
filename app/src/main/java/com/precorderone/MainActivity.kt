@@ -80,11 +80,14 @@ class MainActivity : AppCompatActivity() {
             override fun onProgressChanged(seekBar: android.widget.SeekBar?, progress: Int, fromUser: Boolean) {
                 exposurePercent = progress + 20
                 binding.exposureText.text = getString(R.string.exposure_label, exposurePercent)
-                if (fromUser) engine.setManualExposurePercent(exposurePercent)
+                if (!fromUser) engine.setManualExposurePercent(exposurePercent)
             }
 
             override fun onStartTrackingTouch(seekBar: android.widget.SeekBar?) = Unit
-            override fun onStopTrackingTouch(seekBar: android.widget.SeekBar?) = Unit
+
+            override fun onStopTrackingTouch(seekBar: android.widget.SeekBar?) {
+                engine.setManualExposurePercent(exposurePercent)
+            }
         })
         binding.exposureText.text = getString(R.string.exposure_label, exposurePercent)
 
