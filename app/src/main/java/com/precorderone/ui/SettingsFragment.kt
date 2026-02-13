@@ -56,6 +56,23 @@ class SettingsFragment : PreferenceFragmentCompat() {
             return if (lensPref?.value == "front") CameraCharacteristics.LENS_FACING_FRONT else CameraCharacteristics.LENS_FACING_BACK
         }
 
+        fun updateFpsOptions(selectedId: String?) {
+            val id = selectedId ?: return
+            val chars = manager.getCameraCharacteristics(id)
+            val supported = collectSupportedFps(chars)
+                .filter { it >= 24 }
+                .distinct()
+                .sorted()
+                .ifEmpty { listOf(30, 60) }
+
+            targetFpsPref?.entries = supported.map { "$it fps" }.toTypedArray()
+            targetFpsPref?.entryValues = supported.map { it.toString() }.toTypedArray()
+            val current = targetFpsPref?.value?.toIntOrNull()
+            if (current == null || current !in supported) {
+                targetFpsPref?.value = supported.last().toString()
+            }
+        }
+
         fun refreshCameraEntries() {
             val desiredLens = selectedLensFacing()
             val ids = manager.cameraIdList.filter { id ->
@@ -91,23 +108,6 @@ class SettingsFragment : PreferenceFragmentCompat() {
             when (chars.get(CameraCharacteristics.LENS_FACING)) {
                 CameraCharacteristics.LENS_FACING_FRONT -> lensPref?.value = "front"
                 CameraCharacteristics.LENS_FACING_BACK -> lensPref?.value = "back"
-            }
-        }
-
-        fun updateFpsOptions(selectedId: String?) {
-            val id = selectedId ?: return
-            val chars = manager.getCameraCharacteristics(id)
-            val supported = collectSupportedFps(chars)
-                .filter { it >= 24 }
-                .distinct()
-                .sorted()
-                .ifEmpty { listOf(30, 60) }
-
-            targetFpsPref?.entries = supported.map { "$it fps" }.toTypedArray()
-            targetFpsPref?.entryValues = supported.map { it.toString() }.toTypedArray()
-            val current = targetFpsPref?.value?.toIntOrNull()
-            if (current == null || current !in supported) {
-                targetFpsPref?.value = supported.last().toString()
             }
         }
 
