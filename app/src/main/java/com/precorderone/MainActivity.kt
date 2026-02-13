@@ -28,6 +28,7 @@ class MainActivity : AppCompatActivity() {
     private var bufferFill = 0f
     private var currentPhysicalRotation = Surface.ROTATION_0
     private var measuredFps = 0f
+    private var triggerArmed = false
 
     private val permissionsLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -95,12 +96,13 @@ class MainActivity : AppCompatActivity() {
         isRecordingLoop = true
         bufferFill = 0f
         isSaving = false
+        triggerArmed = false
         updateBufferUi()
     }
 
     private fun onTrigger() {
         val settings = settingsRepository.load()
-        if (!isRecordingLoop || isSaving || bufferFill < 0.98f) return
+        if (!isRecordingLoop || isSaving || !triggerArmed) return
 
         isSaving = true
         updateBufferUi()
@@ -120,7 +122,9 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateBufferUi() {
         binding.bufferProgress.progress = (bufferFill * 100).toInt().coerceIn(0, 100)
-        val ready = bufferFill >= 0.98f
+        if (bufferFill >= 0.98f) triggerArmed = true
+        if (bufferFill < 0.90f) triggerArmed = false
+        val ready = triggerArmed
         binding.btnTrigger.isEnabled = ready && !isSaving
         binding.btnTrigger.alpha = if (ready && !isSaving) 1f else 0.4f
 

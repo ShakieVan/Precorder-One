@@ -65,7 +65,7 @@ class PrecorderEngine(private val context: Context) {
     private var fpsWindowFrames: Int = 0
 
     fun bind(owner: LifecycleOwner, previewView: PreviewView, settings: PrecorderSettings) {
-        retentionUs = settings.loopSeconds * 1_000_000L
+        retentionUs = (settings.loopSeconds + 1) * 1_000_000L
         val key = "${settings.cameraId}|${settings.lensFacing}|${settings.targetFps}|${settings.aspectRatio}"
 
         if (key != currentConfigKey) {
@@ -226,7 +226,9 @@ class PrecorderEngine(private val context: Context) {
 
         val yuv = yuv420888ToNv12(image)
         inputBuffer.put(yuv)
-        codec.queueInputBuffer(inputIndex, 0, yuv.size, image.imageInfo.timestamp / 1_000, 0)
+        val ptsUs = image.imageInfo.timestamp / 1_000
+        codec.queueInputBuffer(inputIndex, 0, yuv.size, ptsUs, 0)
+        updateMeasuredFps(ptsUs)
     }
 
     private fun drainCodec(codec: MediaCodec) {
@@ -250,7 +252,6 @@ class PrecorderEngine(private val context: Context) {
                             )
                         )
                         notifyBufferProgress(getBufferFillRatio())
-                        updateMeasuredFps(info.presentationTimeUs)
                     }
                     codec.releaseOutputBuffer(outIndex, false)
                 }
@@ -270,12 +271,20 @@ class PrecorderEngine(private val context: Context) {
                 return@launch
             }
 
-            val frames = ringBuffer.snapshot().filterNot { it.isConfig }
+            val allFrames = ringBuffer.snapshot().filterNot { it.isConfig }
             val format = encoderOutputFormat
-            if (frames.size < 8 || format == null) {
+            if (allFrames.size < 8 || format == null) {
                 onDone(null)
                 return@launch
             }
+
+
+            val firstKeyIndex = allFrames.indexOfFirst { (it.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0 }
+            if (firstKeyIndex < 0) {
+                onDone(null)
+                return@launch
+            }
+            val frames = allFrames.subList(firstKeyIndex, allFrames.size)
 
             val output = createOutputTarget(settings) ?: run {
                 onDone(null)
