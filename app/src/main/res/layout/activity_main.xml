@@ -9,18 +9,33 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
 
-    <TextView
-        android:id="@+id/statusText"
+    <LinearLayout
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_gravity="top|start"
         android:layout_margin="12dp"
         android:background="#66000000"
-        android:paddingHorizontal="10dp"
-        android:paddingVertical="6dp"
-        android:text="@string/status_idle"
-        android:textColor="@android:color/white"
-        android:textSize="12sp" />
+        android:orientation="vertical"
+        android:padding="8dp">
+
+        <TextView
+            android:id="@+id/statusText"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/status_idle"
+            android:textColor="@android:color/white"
+            android:textSize="12sp" />
+
+        <ProgressBar
+            android:id="@+id/bufferProgress"
+            style="?android:attr/progressBarStyleHorizontal"
+            android:layout_width="120dp"
+            android:layout_height="6dp"
+            android:layout_marginTop="6dp"
+            android:max="100"
+            android:progress="0"
+            android:progressTint="#38D14A" />
+    </LinearLayout>
 
     <ImageButton
         android:id="@+id/btnSettings"
@@ -33,6 +48,21 @@
         android:padding="10dp"
         android:src="@android:drawable/ic_menu_manage"
         android:tint="@android:color/white" />
+
+    <FrameLayout
+        android:id="@+id/orientationIndicatorRing"
+        android:layout_width="84dp"
+        android:layout_height="84dp"
+        android:layout_gravity="bottom|center_horizontal"
+        android:layout_marginBottom="8dp">
+
+        <ImageView
+            android:layout_width="12dp"
+            android:layout_height="12dp"
+            android:layout_gravity="top|center_horizontal"
+            android:layout_marginTop="2dp"
+            android:src="@drawable/ic_orientation_pointer" />
+    </FrameLayout>
 
     <ImageButton
         android:id="@+id/btnTrigger"
