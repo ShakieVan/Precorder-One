@@ -153,6 +153,8 @@ class PrecorderEngine(private val context: Context) {
                 .setCaptureRequestOption(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, fpsRange)
         }
 
+        applyFrameRatePriorityControls(settings, previewBuilder, analysisBuilder)
+
         val preview = previewBuilder.build().also {
             it.setSurfaceProvider(previewView.surfaceProvider)
         }
@@ -202,6 +204,57 @@ class PrecorderEngine(private val context: Context) {
         containing.firstOrNull { it.lower == targetFps && it.upper == targetFps }?.let { return it }
         containing.minByOrNull { abs(it.upper - targetFps) + abs(it.lower - targetFps) }?.let { return it }
         return ranges.maxByOrNull { it.upper }
+    }
+
+    private fun applyFrameRatePriorityControls(
+        settings: PrecorderSettings,
+        previewBuilder: Preview.Builder,
+        analysisBuilder: ImageAnalysis.Builder
+    ) {
+        val targetFps = settings.targetFps
+        val cameraId = settings.cameraId ?: return
+        val chars = runCatching {
+            val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+            manager.getCameraCharacteristics(cameraId)
+        }.getOrNull() ?: return
+
+        // Stabilere FPS unter schwierigen Lichtbedingungen: bei hohen Ziel-FPS Framezeit priorisieren.
+        if (targetFps >= 60 && supportsManualSensor(chars)) {
+            val frameDurationNs = (1_000_000_000L / targetFps.coerceAtLeast(1))
+            val exposureNs = (frameDurationNs * 8L / 10L).coerceAtLeast(1_000_000L)
+            val sensitivity = chooseIso(chars)
+
+            val previewExt = Camera2Interop.Extender(previewBuilder)
+            val analysisExt = Camera2Interop.Extender(analysisBuilder)
+            listOf(previewExt, analysisExt).forEach { ext ->
+                ext.setCaptureRequestOption(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
+                ext.setCaptureRequestOption(CaptureRequest.SENSOR_FRAME_DURATION, frameDurationNs)
+                ext.setCaptureRequestOption(CaptureRequest.SENSOR_EXPOSURE_TIME, exposureNs)
+                ext.setCaptureRequestOption(CaptureRequest.SENSOR_SENSITIVITY, sensitivity)
+                ext.setCaptureRequestOption(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_AUTO)
+                ext.setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO)
+                ext.setCaptureRequestOption(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
+            }
+            onProfileFallback?.invoke("FPS-Priorität aktiv: fixe Belichtungszeit für stabilere Bildrate")
+        } else {
+            val previewExt = Camera2Interop.Extender(previewBuilder)
+            val analysisExt = Camera2Interop.Extender(analysisBuilder)
+            listOf(previewExt, analysisExt).forEach { ext ->
+                ext.setCaptureRequestOption(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+                ext.setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO)
+                ext.setCaptureRequestOption(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
+            }
+        }
+    }
+
+    private fun supportsManualSensor(chars: CameraCharacteristics): Boolean {
+        val caps = chars.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES).orEmpty()
+        return caps.contains(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_SENSOR)
+    }
+
+    private fun chooseIso(chars: CameraCharacteristics): Int {
+        val range = chars.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE) ?: return 800
+        return 800.coerceIn(range.lower, range.upper)
     }
 
     private fun ensureCodec(image: ImageProxy, settings: PrecorderSettings) {
