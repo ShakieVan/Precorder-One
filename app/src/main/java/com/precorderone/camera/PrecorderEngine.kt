@@ -180,7 +180,7 @@ class PrecorderEngine(private val context: Context) {
                 onDone(null)
                 return@launch
             }
-            val uri = createOutputUri(settings) ?: run {
+            val uri = createOutputUri() ?: run {
                 onDone(null)
                 return@launch
             }
@@ -226,7 +226,7 @@ class PrecorderEngine(private val context: Context) {
         codec?.release()
     }
 
-    private fun createOutputUri(settings: PrecorderSettings): Uri? {
+    private fun createOutputUri(): Uri? {
         val resolver = context.contentResolver
         val fileName = "precorder_${System.currentTimeMillis()}.mp4"
 
