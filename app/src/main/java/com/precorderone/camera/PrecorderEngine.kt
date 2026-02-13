@@ -1,5 +1,3 @@
-@file:OptIn(androidx.camera.camera2.interop.ExperimentalCamera2Interop::class)
-
 package com.precorderone.camera
 
 import android.content.ContentValues
@@ -42,7 +40,7 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import kotlin.math.abs
 
-@OptIn(ExperimentalCamera2Interop::class)
+@ExperimentalCamera2Interop
 class PrecorderEngine(private val context: Context) {
     private var camera: Camera? = null
     private var cameraProvider: ProcessCameraProvider? = null
@@ -99,7 +97,7 @@ class PrecorderEngine(private val context: Context) {
         val key = "${settings.cameraId}|${settings.lensFacing}|${settings.targetFps}|${settings.aspectRatio}"
 
         if (key != currentConfigKey) {
-            resetEncodingState(clearBuffer = true)
+            resetEncodingState()
             currentConfigKey = key
         } else {
             // Bei erneutem Binden trotzdem Puffer leeren, damit nur konsistente Frames enthalten sind.
@@ -179,6 +177,7 @@ class PrecorderEngine(private val context: Context) {
         applyZoom(settings.digitalZoomRatio)
     }
 
+    @Suppress("DEPRECATION")
     private fun Preview.Builder.applyAspect(aspect: String): Preview.Builder {
         when (aspect) {
             "4:3" -> setTargetResolution(if (forceLowProfile) Size(480, 360) else Size(640, 480))
@@ -187,6 +186,7 @@ class PrecorderEngine(private val context: Context) {
         return this
     }
 
+    @Suppress("DEPRECATION")
     private fun ImageAnalysis.Builder.applyAspect(aspect: String): ImageAnalysis.Builder {
         when (aspect) {
             "4:3" -> setTargetResolution(if (forceLowProfile) Size(480, 360) else Size(640, 480))
@@ -265,7 +265,7 @@ class PrecorderEngine(private val context: Context) {
 
         if (formatReady && (width != formatWidth || height != formatHeight)) {
             // Formatwechsel (z.B. 16:9 -> 4:3): Encoder+Puffer sauber neu aufbauen.
-            resetEncodingState(clearBuffer = true)
+            resetEncodingState()
             ringBuffer = EncodedFrameRingBuffer(retentionUs)
             notifyBufferProgress(0f)
         }
@@ -402,14 +402,12 @@ class PrecorderEngine(private val context: Context) {
     fun release() {
         analysis?.clearAnalyzer()
         analyzerExecutor.shutdown()
-        resetEncodingState(clearBuffer = true)
+        resetEncodingState()
     }
 
-    private fun resetEncodingState(clearBuffer: Boolean) {
-        if (clearBuffer) {
-            ringBuffer.clear()
-            notifyBufferProgress(0f)
-        }
+    private fun resetEncodingState() {
+        ringBuffer.clear()
+        notifyBufferProgress(0f)
         encoderOutputFormat = null
         lastSamplePtsUs = -1L
         fpsWindowStartPtsUs = -1L
@@ -514,7 +512,7 @@ class PrecorderEngine(private val context: Context) {
         val preview = boundPreviewView
         if (owner != null && preview != null) {
             ContextCompat.getMainExecutor(context).execute {
-                resetEncodingState(clearBuffer = true)
+                resetEncodingState()
                 bindInternal(owner, preview, settings.copy(targetFps = 60))
             }
         }
