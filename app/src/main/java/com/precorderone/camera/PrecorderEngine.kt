@@ -1,3 +1,5 @@
+@file:OptIn(androidx.camera.camera2.interop.ExperimentalCamera2Interop::class)
+
 package com.precorderone.camera
 
 import android.content.ContentValues
