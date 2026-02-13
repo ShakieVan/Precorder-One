@@ -46,41 +46,61 @@ class SettingsFragment : PreferenceFragmentCompat() {
     }
 
     private fun setupCameraListPreference(context: Context) {
+        val lensPref = findPreference<ListPreference>(KEY_LENS_FACING)
         val cameraPref = findPreference<ListPreference>(KEY_CAMERA_ID) ?: return
         val targetFpsPref = findPreference<ListPreference>(KEY_TARGET_FPS)
 
         val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
-        val ids = manager.cameraIdList
-        val labels = ids.map { id ->
-            val chars = manager.getCameraCharacteristics(id)
-            val lens = chars.get(CameraCharacteristics.LENS_FACING)
-            val lensLabel = when (lens) {
-                CameraCharacteristics.LENS_FACING_FRONT -> "Front"
-                CameraCharacteristics.LENS_FACING_BACK -> "Back"
-                CameraCharacteristics.LENS_FACING_EXTERNAL -> "External"
-                else -> "Unknown"
-            }
-            val ranges = chars.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
-            val maxFps = ranges?.maxOfOrNull { it.upper } ?: 30
-            "Kamera $id ($lensLabel, bis $maxFps fps)"
+
+        fun selectedLensFacing(): Int {
+            return if (lensPref?.value == "front") CameraCharacteristics.LENS_FACING_FRONT else CameraCharacteristics.LENS_FACING_BACK
         }
 
-        cameraPref.entries = labels.toTypedArray()
-        cameraPref.entryValues = ids
-        if (cameraPref.value == null && ids.isNotEmpty()) {
-            cameraPref.value = ids.first()
+        fun refreshCameraEntries() {
+            val desiredLens = selectedLensFacing()
+            val ids = manager.cameraIdList.filter { id ->
+                val chars = manager.getCameraCharacteristics(id)
+                chars.get(CameraCharacteristics.LENS_FACING) == desiredLens
+            }
+
+            val labels = ids.mapIndexed { index, id ->
+                val chars = manager.getCameraCharacteristics(id)
+                val focal = chars.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)?.firstOrNull()
+                val focalLabel = focal?.let { String.format("%.1fmm", it) } ?: "?mm"
+                val maxFps = collectSupportedFps(chars).maxOrNull() ?: 30
+                val lensName = if (desiredLens == CameraCharacteristics.LENS_FACING_FRONT) "Front" else "Back"
+                "$lensName ${index + 1} (ID $id, $focalLabel, bis $maxFps fps)"
+            }
+
+            cameraPref.entries = labels.toTypedArray()
+            cameraPref.entryValues = ids.toTypedArray()
+            if (ids.isEmpty()) {
+                cameraPref.value = null
+                return
+            }
+            if (cameraPref.value !in ids) {
+                cameraPref.value = ids.first()
+            }
+            cameraPref.summaryProvider = ListPreference.SimpleSummaryProvider.getInstance()
+            updateFpsOptions(cameraPref.value)
         }
-        cameraPref.summaryProvider = ListPreference.SimpleSummaryProvider.getInstance()
+
+        fun updateLensFromCamera(cameraId: String?) {
+            val id = cameraId ?: return
+            val chars = manager.getCameraCharacteristics(id)
+            when (chars.get(CameraCharacteristics.LENS_FACING)) {
+                CameraCharacteristics.LENS_FACING_FRONT -> lensPref?.value = "front"
+                CameraCharacteristics.LENS_FACING_BACK -> lensPref?.value = "back"
+            }
+        }
 
         fun updateFpsOptions(selectedId: String?) {
             val id = selectedId ?: return
             val chars = manager.getCameraCharacteristics(id)
-            val ranges = chars.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES).orEmpty()
-            val supported = ranges
-                .flatMap { range -> supportedValuesFromRange(range) }
+            val supported = collectSupportedFps(chars)
+                .filter { it >= 24 }
                 .distinct()
                 .sorted()
-                .filter { it >= 24 }
                 .ifEmpty { listOf(30, 60) }
 
             targetFpsPref?.entries = supported.map { "$it fps" }.toTypedArray()
@@ -91,11 +111,33 @@ class SettingsFragment : PreferenceFragmentCompat() {
             }
         }
 
-        updateFpsOptions(cameraPref.value)
         cameraPref.setOnPreferenceChangeListener { _, newValue ->
-            updateFpsOptions(newValue as? String)
+            val id = newValue as? String
+            updateLensFromCamera(id)
+            updateFpsOptions(id)
             true
         }
+
+        lensPref?.setOnPreferenceChangeListener { _, _ ->
+            refreshCameraEntries()
+            true
+        }
+
+        refreshCameraEntries()
+    }
+
+    private fun collectSupportedFps(chars: CameraCharacteristics): List<Int> {
+        val values = mutableSetOf<Int>()
+        chars.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
+            ?.forEach { range -> values.addAll(supportedValuesFromRange(range)) }
+
+        // Viele Geräte liefern hohe FPS nur über High-Speed-Profile.
+        val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+        map?.highSpeedVideoFpsRanges?.forEach { range ->
+            values.add(range.upper)
+            values.add(range.lower)
+        }
+        return values.toList()
     }
 
     private fun supportedValuesFromRange(range: Range<Int>): List<Int> {
@@ -111,6 +153,7 @@ class SettingsFragment : PreferenceFragmentCompat() {
     companion object {
         private const val KEY_OUTPUT_URI = "output_uri"
         private const val KEY_CAMERA_ID = "camera_id"
+        private const val KEY_LENS_FACING = "lens_facing"
         private const val KEY_TARGET_FPS = "target_fps"
         private const val KEY_ASPECT_RATIO = "aspect_ratio"
     }

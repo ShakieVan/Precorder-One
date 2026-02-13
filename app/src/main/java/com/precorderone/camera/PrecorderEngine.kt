@@ -14,7 +14,6 @@ import android.net.Uri
 import android.provider.MediaStore
 import android.util.Log
 import android.util.Range
-import android.util.Size
 import android.view.Surface
 import androidx.camera.camera2.interop.Camera2CameraInfo
 import androidx.camera.camera2.interop.Camera2Interop
@@ -131,7 +130,13 @@ class PrecorderEngine(private val context: Context) {
             }
         }
 
-        camera = provider.bindToLifecycle(owner, selector, preview, analysis)
+        camera = runCatching {
+            provider.bindToLifecycle(owner, selector, preview, analysis)
+        }.getOrElse {
+            Log.w(TAG, "Selected camera could not be bound, falling back to lens facing only", it)
+            val fallbackSelector = CameraSelector.Builder().requireLensFacing(settings.lensFacing).build()
+            provider.bindToLifecycle(owner, fallbackSelector, preview, analysis)
+        }
         toggleTorch(settings.torchEnabled)
         applyZoom(settings.digitalZoomRatio)
     }
@@ -139,7 +144,6 @@ class PrecorderEngine(private val context: Context) {
     private fun Preview.Builder.applyAspect(aspect: String): Preview.Builder {
         when (aspect) {
             "4:3" -> setTargetAspectRatio(AspectRatio.RATIO_4_3)
-            "16:10" -> setTargetResolution(Size(1280, 800))
             else -> setTargetAspectRatio(AspectRatio.RATIO_16_9)
         }
         return this
@@ -148,7 +152,6 @@ class PrecorderEngine(private val context: Context) {
     private fun ImageAnalysis.Builder.applyAspect(aspect: String): ImageAnalysis.Builder {
         when (aspect) {
             "4:3" -> setTargetAspectRatio(AspectRatio.RATIO_4_3)
-            "16:10" -> setTargetResolution(Size(1280, 800))
             else -> setTargetAspectRatio(AspectRatio.RATIO_16_9)
         }
         return this
@@ -161,10 +164,10 @@ class PrecorderEngine(private val context: Context) {
         val ranges = chars.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES).orEmpty()
         if (ranges.isEmpty()) return null
 
-        return ranges
-            .filter { targetFps in it.lower..it.upper }
-            .minByOrNull { abs(it.upper - targetFps) }
-            ?: ranges.maxByOrNull { it.upper }
+        val containing = ranges.filter { targetFps in it.lower..it.upper }
+        containing.firstOrNull { it.lower == targetFps && it.upper == targetFps }?.let { return it }
+        containing.minByOrNull { abs(it.upper - targetFps) + abs(it.lower - targetFps) }?.let { return it }
+        return ranges.maxByOrNull { it.upper }
     }
 
     private fun ensureCodec(image: ImageProxy, settings: PrecorderSettings) {
