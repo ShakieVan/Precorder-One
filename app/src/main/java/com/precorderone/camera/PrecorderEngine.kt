@@ -16,8 +16,10 @@ import android.util.Log
 import android.util.Range
 import android.util.Size
 import android.view.Surface
+import androidx.camera.camera2.interop.Camera2CameraControl
 import androidx.camera.camera2.interop.Camera2CameraInfo
 import androidx.camera.camera2.interop.Camera2Interop
+import androidx.camera.camera2.interop.CaptureRequestOptions
 import androidx.camera.camera2.interop.ExperimentalCamera2Interop
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
@@ -84,6 +86,17 @@ class PrecorderEngine(private val context: Context) {
     private var boundOwner: LifecycleOwner? = null
     private var boundPreviewView: PreviewView? = null
     private var boundSettings: PrecorderSettings? = null
+    private var manualExposurePercent: Int = 55
+
+
+    fun getManualExposurePercent(): Int = manualExposurePercent
+
+    fun setManualExposurePercent(percent: Int) {
+        manualExposurePercent = percent.coerceIn(20, 100)
+        val cam = camera ?: return
+        val settings = boundSettings ?: return
+        applyRuntimeExposureOverride(cam, settings)
+    }
 
     fun bind(owner: LifecycleOwner, previewView: PreviewView, settings: PrecorderSettings) {
         boundOwner = owner
@@ -175,6 +188,7 @@ class PrecorderEngine(private val context: Context) {
         }
         toggleTorch(settings.torchEnabled)
         applyZoom(settings.digitalZoomRatio)
+        camera?.let { applyRuntimeExposureOverride(it, settings) }
     }
 
     @Suppress("DEPRECATION")
@@ -223,7 +237,7 @@ class PrecorderEngine(private val context: Context) {
         // Stabilere FPS unter schwierigen Lichtbedingungen: bei hohen Ziel-FPS Framezeit priorisieren.
         if (targetFps >= 60 && supportsManualSensor(chars)) {
             val frameDurationNs = (1_000_000_000L / targetFps.coerceAtLeast(1))
-            val exposureNs = (frameDurationNs * 8L / 10L).coerceAtLeast(1_000_000L)
+            val exposureNs = (frameDurationNs * (manualExposurePercent.coerceIn(20, 100)) / 100L).coerceIn(500_000L, frameDurationNs)
             val sensitivity = chooseIso(chars)
 
             val previewExt = Camera2Interop.Extender(previewBuilder)
@@ -247,6 +261,32 @@ class PrecorderEngine(private val context: Context) {
                 ext.setCaptureRequestOption(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
             }
         }
+    }
+
+    private fun applyRuntimeExposureOverride(cam: Camera, settings: PrecorderSettings) {
+        if (settings.targetFps < 60) return
+        val cameraId = settings.cameraId ?: return
+        val chars = runCatching {
+            val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+            manager.getCameraCharacteristics(cameraId)
+        }.getOrNull() ?: return
+        if (!supportsManualSensor(chars)) return
+
+        val frameDurationNs = (1_000_000_000L / settings.targetFps.coerceAtLeast(1))
+        val exposureNs = (frameDurationNs * manualExposurePercent.coerceIn(20, 100) / 100L).coerceIn(500_000L, frameDurationNs)
+        val sensitivity = chooseIso(chars)
+
+        val options = CaptureRequestOptions.Builder()
+            .setCaptureRequestOption(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
+            .setCaptureRequestOption(CaptureRequest.SENSOR_FRAME_DURATION, frameDurationNs)
+            .setCaptureRequestOption(CaptureRequest.SENSOR_EXPOSURE_TIME, exposureNs)
+            .setCaptureRequestOption(CaptureRequest.SENSOR_SENSITIVITY, sensitivity)
+            .setCaptureRequestOption(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_AUTO)
+            .setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO)
+            .setCaptureRequestOption(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
+            .build()
+
+        runCatching { Camera2CameraControl.from(cam.cameraControl).setCaptureRequestOptions(options) }
     }
 
     private fun supportsManualSensor(chars: CameraCharacteristics): Boolean {

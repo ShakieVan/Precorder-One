@@ -32,6 +32,7 @@ class MainActivity : AppCompatActivity() {
     private var encodedFps = 0f
     private var dropRate = 0f
     private var triggerArmed = false
+    private var exposurePercent = 55
 
     private val permissionsLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -72,6 +73,21 @@ class MainActivity : AppCompatActivity() {
             runOnUiThread { Toast.makeText(this, msg, Toast.LENGTH_LONG).show() }
         }
 
+        exposurePercent = engine.getManualExposurePercent()
+        binding.exposureSlider.max = 80
+        binding.exposureSlider.progress = exposurePercent - 20
+        binding.exposureSlider.setOnSeekBarChangeListener(object : android.widget.SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: android.widget.SeekBar?, progress: Int, fromUser: Boolean) {
+                exposurePercent = progress + 20
+                binding.exposureText.text = getString(R.string.exposure_label, exposurePercent)
+                if (fromUser) engine.setManualExposurePercent(exposurePercent)
+            }
+
+            override fun onStartTrackingTouch(seekBar: android.widget.SeekBar?) = Unit
+            override fun onStopTrackingTouch(seekBar: android.widget.SeekBar?) = Unit
+        })
+        binding.exposureText.text = getString(R.string.exposure_label, exposurePercent)
+
         orientationListener = object : OrientationEventListener(this) {
             override fun onOrientationChanged(orientation: Int) {
                 if (orientation == ORIENTATION_UNKNOWN) return
@@ -108,6 +124,7 @@ class MainActivity : AppCompatActivity() {
     private fun bindCamera() {
         val settings = settingsRepository.load()
         engine.bind(this, binding.previewView, settings)
+        engine.setManualExposurePercent(exposurePercent)
         isRecordingLoop = true
         bufferFill = 0f
         isSaving = false
