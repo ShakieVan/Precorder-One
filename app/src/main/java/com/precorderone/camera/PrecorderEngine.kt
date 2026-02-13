@@ -248,7 +248,7 @@ class PrecorderEngine(private val context: Context) {
     }
 
     private fun supportsManualSensor(chars: CameraCharacteristics): Boolean {
-        val caps = chars.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES).orEmpty()
+        val caps = chars.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES) ?: intArrayOf()
         return caps.contains(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_SENSOR)
     }
 
