@@ -27,7 +27,8 @@ class MainActivity : AppCompatActivity() {
     private var isSaving = false
     private var bufferFill = 0f
     private var currentPhysicalRotation = Surface.ROTATION_0
-    private var measuredFps = 0f
+    private var sourceFps = 0f
+    private var queuedFps = 0f
     private var encodedFps = 0f
     private var dropRate = 0f
     private var triggerArmed = false
@@ -54,13 +55,14 @@ class MainActivity : AppCompatActivity() {
         }
         engine.onMeasuredFpsChanged = { fps ->
             runOnUiThread {
-                measuredFps = fps
+                sourceFps = fps
                 updateBufferUi()
             }
         }
-        engine.onDebugStatsChanged = { input, encoded, drop ->
+        engine.onDebugStatsChanged = { source, queued, encoded, drop ->
             runOnUiThread {
-                measuredFps = input
+                sourceFps = source
+                queuedFps = queued
                 encodedFps = encoded
                 dropRate = drop
                 updateBufferUi()
@@ -142,7 +144,7 @@ class MainActivity : AppCompatActivity() {
         binding.btnTrigger.alpha = if (!isSaving) 1f else 0.4f
 
         val target = settingsRepository.load().targetFps
-        binding.debugFpsText.text = getString(R.string.debug_fps, measuredFps, encodedFps, dropRate, target)
+        binding.debugFpsText.text = getString(R.string.debug_fps, sourceFps, queuedFps, encodedFps, dropRate, target)
 
         binding.statusText.text = when {
             isSaving -> getString(R.string.status_saving)

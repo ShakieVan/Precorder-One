@@ -53,7 +53,7 @@ class PrecorderEngine(private val context: Context) {
 
     var onBufferFillChanged: ((Float) -> Unit)? = null
     var onMeasuredFpsChanged: ((Float) -> Unit)? = null
-    var onDebugStatsChanged: ((Float, Float, Float) -> Unit)? = null
+    var onDebugStatsChanged: ((Float, Float, Float, Float) -> Unit)? = null
     var onProfileFallback: ((String) -> Unit)? = null
 
     private var retentionUs: Long = 5_000_000
@@ -65,6 +65,10 @@ class PrecorderEngine(private val context: Context) {
     private var lastSamplePtsUs: Long = -1L
     private var fpsWindowStartPtsUs: Long = -1L
     private var fpsWindowFrames: Int = 0
+
+    private var sourceWindowStartUs: Long = -1L
+    private var sourceWindowFrames: Int = 0
+    private var sourceFps: Float = 0f
 
     private var inputWindowStartUs: Long = -1L
     private var inputWindowFrames: Int = 0
@@ -155,6 +159,7 @@ class PrecorderEngine(private val context: Context) {
 
         analysis = analysisBuilder.build().also { analyzer ->
             analyzer.setAnalyzer(analyzerExecutor) { image ->
+                updateSourceStats(image.imageInfo.timestamp / 1_000)
                 encodeImage(image, settings)
             }
         }
@@ -252,7 +257,7 @@ class PrecorderEngine(private val context: Context) {
         inputBuffer.put(yuv)
         val ptsUs = image.imageInfo.timestamp / 1_000
         codec.queueInputBuffer(inputIndex, 0, yuv.size, ptsUs, 0)
-        updateInputStats(ptsUs)
+        updateQueuedStats(ptsUs)
     }
 
     private fun drainCodec(codec: MediaCodec) {
@@ -355,7 +360,10 @@ class PrecorderEngine(private val context: Context) {
         fpsWindowStartPtsUs = -1L
         fpsWindowFrames = 0
         onMeasuredFpsChanged?.invoke(0f)
-        onDebugStatsChanged?.invoke(0f, 0f, 0f)
+        onDebugStatsChanged?.invoke(0f, 0f, 0f, 0f)
+        sourceWindowStartUs = -1L
+        sourceWindowFrames = 0
+        sourceFps = 0f
         inputWindowStartUs = -1L
         inputWindowFrames = 0
         inputFps = 0f
@@ -375,8 +383,27 @@ class PrecorderEngine(private val context: Context) {
     }
 
 
-    private fun updateInputStats(currentPtsUs: Long) {
-        updateMeasuredFps(currentPtsUs)
+    private fun updateSourceStats(currentPtsUs: Long) {
+        if (sourceWindowStartUs < 0L) {
+            sourceWindowStartUs = currentPtsUs
+            sourceWindowFrames = 0
+            return
+        }
+
+        sourceWindowFrames += 1
+        val elapsedUs = currentPtsUs - sourceWindowStartUs
+        if (elapsedUs >= 1_000_000L) {
+            sourceFps = sourceWindowFrames * 1_000_000f / elapsedUs.toFloat()
+            sourceWindowStartUs = currentPtsUs
+            sourceWindowFrames = 0
+            onMeasuredFpsChanged?.invoke(sourceFps)
+            publishDebugStats()
+        }
+    }
+
+    private fun updateQueuedStats(currentPtsUs: Long) {
+        if (lastSamplePtsUs > 0 && currentPtsUs <= lastSamplePtsUs) return
+        lastSamplePtsUs = currentPtsUs
 
         if (inputWindowStartUs < 0L) {
             inputWindowStartUs = currentPtsUs
@@ -413,8 +440,8 @@ class PrecorderEngine(private val context: Context) {
     }
 
     private fun publishDebugStats() {
-        val dropPercent = if (inputFps <= 0.1f) 0f else ((inputFps - encodedFps) / inputFps * 100f).coerceIn(0f, 100f)
-        onDebugStatsChanged?.invoke(inputFps, encodedFps, dropPercent)
+        val dropPercent = if (sourceFps <= 0.1f) 0f else ((sourceFps - encodedFps) / sourceFps * 100f).coerceIn(0f, 100f)
+        onDebugStatsChanged?.invoke(sourceFps, inputFps, encodedFps, dropPercent)
     }
 
     private fun maybeAutoFallback() {
@@ -435,26 +462,6 @@ class PrecorderEngine(private val context: Context) {
                 resetEncodingState(clearBuffer = true)
                 bindInternal(owner, preview, settings.copy(targetFps = 60))
             }
-        }
-    }
-
-    private fun updateMeasuredFps(currentPtsUs: Long) {
-        if (lastSamplePtsUs > 0 && currentPtsUs <= lastSamplePtsUs) return
-        lastSamplePtsUs = currentPtsUs
-
-        if (fpsWindowStartPtsUs < 0) {
-            fpsWindowStartPtsUs = currentPtsUs
-            fpsWindowFrames = 0
-            return
-        }
-
-        fpsWindowFrames += 1
-        val elapsedUs = currentPtsUs - fpsWindowStartPtsUs
-        if (elapsedUs >= 1_000_000L) {
-            val fps = fpsWindowFrames * 1_000_000f / elapsedUs.toFloat()
-            onMeasuredFpsChanged?.invoke(fps)
-            fpsWindowStartPtsUs = currentPtsUs
-            fpsWindowFrames = 0
         }
     }
 
