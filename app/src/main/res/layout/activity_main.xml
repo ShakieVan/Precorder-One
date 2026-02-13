@@ -43,7 +43,6 @@
         android:background="@drawable/bg_round_button_light"
         android:contentDescription="@string/trigger_button"
         android:scaleType="center"
-        android:src="@android:drawable/ic_media_play"
-        android:tint="#222222" />
+        android:src="@drawable/ic_record_dot" />
 
 </FrameLayout>

@@ -19,7 +19,8 @@ class SettingsRepository(context: Context) {
         torchEnabled = prefs.getBoolean(KEY_TORCH, false),
         digitalZoomRatio = prefs.getInt(KEY_DIGITAL_ZOOM, 1).toFloat().coerceAtLeast(1f),
         analogZoomRatio = prefs.getInt(KEY_ANALOG_ZOOM, 1).toFloat().coerceAtLeast(1f),
-        triggerWithVolumeDown = prefs.getBoolean(KEY_VOLUME_TRIGGER, true)
+        triggerWithVolumeDown = prefs.getBoolean(KEY_VOLUME_TRIGGER, true),
+        aspectRatio = prefs.getString(KEY_ASPECT_RATIO, "16:9") ?: "16:9"
     )
 
     fun save(settings: PrecorderSettings) {
@@ -34,6 +35,7 @@ class SettingsRepository(context: Context) {
             .putInt(KEY_DIGITAL_ZOOM, settings.digitalZoomRatio.toInt())
             .putInt(KEY_ANALOG_ZOOM, settings.analogZoomRatio.toInt())
             .putBoolean(KEY_VOLUME_TRIGGER, settings.triggerWithVolumeDown)
+            .putString(KEY_ASPECT_RATIO, settings.aspectRatio)
             .apply()
     }
 
@@ -48,5 +50,6 @@ class SettingsRepository(context: Context) {
         const val KEY_DIGITAL_ZOOM = "digital_zoom"
         const val KEY_ANALOG_ZOOM = "analog_zoom"
         const val KEY_VOLUME_TRIGGER = "volume_trigger"
+        const val KEY_ASPECT_RATIO = "aspect_ratio"
     }
 }

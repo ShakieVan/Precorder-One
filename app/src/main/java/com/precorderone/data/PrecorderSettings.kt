@@ -10,5 +10,6 @@ data class PrecorderSettings(
     val torchEnabled: Boolean = false,
     val digitalZoomRatio: Float = 1f,
     val analogZoomRatio: Float = 1f,
-    val triggerWithVolumeDown: Boolean = true
+    val triggerWithVolumeDown: Boolean = true,
+    val aspectRatio: String = "16:9"
 )

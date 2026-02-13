@@ -5,6 +5,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
 import android.view.KeyEvent
+import android.view.Surface
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -81,7 +82,7 @@ class MainActivity : AppCompatActivity() {
             return
         }
         binding.statusText.text = getString(R.string.status_saving)
-        engine.exportClip(settings) { uri ->
+        engine.exportClip(settings, currentSurfaceRotation()) { uri ->
             runOnUiThread {
                 if (uri != null) {
                     Toast.makeText(this, getString(R.string.saved_success, uri.toString()), Toast.LENGTH_LONG).show()
@@ -92,6 +93,15 @@ class MainActivity : AppCompatActivity() {
             }
         }
     }
+
+
+    private fun currentSurfaceRotation(): Int =
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+            display?.rotation ?: Surface.ROTATION_0
+        } else {
+            @Suppress("DEPRECATION")
+            windowManager.defaultDisplay.rotation
+        }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
         val settings = settingsRepository.load()

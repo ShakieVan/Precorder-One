@@ -9,8 +9,17 @@ import android.media.MediaFormat
 import android.media.MediaMuxer
 import android.net.Uri
 import android.provider.MediaStore
+import android.view.Surface
 import android.util.Log
+import android.util.Range
+import android.util.Size
+import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.CameraManager
+import android.hardware.camera2.CaptureRequest
 import androidx.camera.camera2.interop.Camera2CameraInfo
+import androidx.camera.camera2.interop.Camera2Interop
+import androidx.camera.camera2.interop.ExperimentalCamera2Interop
+import androidx.camera.core.AspectRatio
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
@@ -19,6 +28,7 @@ import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
+import androidx.core.net.toUri
 import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.LifecycleOwner
 import com.precorderone.data.PrecorderSettings
@@ -30,6 +40,7 @@ import java.nio.ByteBuffer
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
+@OptIn(ExperimentalCamera2Interop::class)
 class PrecorderEngine(private val context: Context) {
     private var camera: Camera? = null
     private var cameraProvider: ProcessCameraProvider? = null
@@ -65,32 +76,71 @@ class PrecorderEngine(private val context: Context) {
         val provider = cameraProvider ?: return
         provider.unbindAll()
 
-        val preview = Preview.Builder().build().also {
-            it.setSurfaceProvider(previewView.surfaceProvider)
-        }
-
-        analysis = ImageAnalysis.Builder()
-            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-            .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_YUV_420_888)
-            .build().also { analyzer ->
-                analyzer.setAnalyzer(analyzerExecutor) { image ->
-                    encodeImage(image, settings)
-                }
-            }
-
         val selectorBuilder = CameraSelector.Builder().requireLensFacing(settings.lensFacing)
         settings.cameraId?.let { desiredId ->
             selectorBuilder.addCameraFilter { infos ->
-                infos.filter { info ->
-                    runCatching { Camera2CameraInfo.from(info).cameraId == desiredId }.getOrDefault(false)
-                }
+                infos.filter { info -> Camera2CameraInfo.from(info).cameraId == desiredId }
             }
         }
         val selector = selectorBuilder.build()
 
+        val previewBuilder = Preview.Builder().applyAspect(settings.aspectRatio)
+        val analysisBuilder = ImageAnalysis.Builder()
+            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+            .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_YUV_420_888)
+            .applyAspect(settings.aspectRatio)
+
+        selectFpsRange(settings.cameraId, settings.targetFps)?.let { fpsRange ->
+            Camera2Interop.Extender(previewBuilder)
+                .setCaptureRequestOption(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, fpsRange)
+            Camera2Interop.Extender(analysisBuilder)
+                .setCaptureRequestOption(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, fpsRange)
+        }
+
+        val preview = previewBuilder.build().also {
+            it.setSurfaceProvider(previewView.surfaceProvider)
+        }
+
+        analysis = analysisBuilder.build().also { analyzer ->
+            analyzer.setAnalyzer(analyzerExecutor) { image ->
+                encodeImage(image, settings)
+            }
+        }
+
         camera = provider.bindToLifecycle(owner, selector, preview, analysis)
         toggleTorch(settings.torchEnabled)
         applyZoom(settings.digitalZoomRatio)
+    }
+
+    private fun Preview.Builder.applyAspect(aspect: String): Preview.Builder {
+        when (aspect) {
+            "4:3" -> setTargetAspectRatio(AspectRatio.RATIO_4_3)
+            "16:10" -> setTargetResolution(Size(1280, 800))
+            else -> setTargetAspectRatio(AspectRatio.RATIO_16_9)
+        }
+        return this
+    }
+
+    private fun ImageAnalysis.Builder.applyAspect(aspect: String): ImageAnalysis.Builder {
+        when (aspect) {
+            "4:3" -> setTargetAspectRatio(AspectRatio.RATIO_4_3)
+            "16:10" -> setTargetResolution(Size(1280, 800))
+            else -> setTargetAspectRatio(AspectRatio.RATIO_16_9)
+        }
+        return this
+    }
+
+    private fun selectFpsRange(cameraId: String?, targetFps: Int): Range<Int>? {
+        val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+        val id = cameraId ?: return null
+        val chars = runCatching { manager.getCameraCharacteristics(id) }.getOrNull() ?: return null
+        val ranges = chars.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES).orEmpty()
+        if (ranges.isEmpty()) return null
+
+        return ranges
+            .sortedBy { kotlin.math.abs(it.upper - targetFps) }
+            .firstOrNull { targetFps in it.lower..it.upper }
+            ?: ranges.maxByOrNull { it.upper }
     }
 
     private fun ensureCodec(image: ImageProxy, settings: PrecorderSettings) {
@@ -133,13 +183,7 @@ class PrecorderEngine(private val context: Context) {
 
         val yuv = yuv420888ToNv12(image)
         inputBuffer.put(yuv)
-        codec.queueInputBuffer(
-            inputIndex,
-            0,
-            yuv.size,
-            image.imageInfo.timestamp / 1_000,
-            0
-        )
+        codec.queueInputBuffer(inputIndex, 0, yuv.size, image.imageInfo.timestamp / 1_000, 0)
     }
 
     private fun drainCodec(codec: MediaCodec) {
@@ -176,20 +220,17 @@ class PrecorderEngine(private val context: Context) {
         }
     }
 
-    fun exportClip(settings: PrecorderSettings, onDone: (Uri?) -> Unit) {
+    fun exportClip(settings: PrecorderSettings, deviceSurfaceRotation: Int, onDone: (Uri?) -> Unit) {
         ioScope.launch {
             val frames = ringBuffer.snapshot().filterNot { it.isConfig }
-            if (frames.isEmpty()) {
-                onDone(null)
-                return@launch
-            }
             val format = encoderOutputFormat
-            if (format == null) {
+            if (frames.isEmpty() || format == null) {
                 onDone(null)
                 return@launch
             }
 
-            val output = createOutputTarget(settings) ?: run {
+            val output = createOutputTarget(settings)
+            if (output == null) {
                 onDone(null)
                 return@launch
             }
@@ -197,14 +238,16 @@ class PrecorderEngine(private val context: Context) {
             val success = runCatching {
                 val outputFd = output.fileDescriptor ?: error("No output file descriptor")
                 MediaMuxer(outputFd, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4).useMuxer { muxer ->
+                    muxer.setOrientationHint(computeOrientationHint(settings, deviceSurfaceRotation))
                     val track = muxer.addTrack(format)
                     muxer.start()
-                    val firstPts = frames.first().presentationTimeUs
-                    frames.forEach { frame ->
+
+                    val stepUs = 1_000_000L / settings.playbackFps.coerceAtLeast(1)
+                    frames.forEachIndexed { index, frame ->
                         val info = MediaCodec.BufferInfo().apply {
                             offset = 0
                             size = frame.data.size
-                            presentationTimeUs = frame.presentationTimeUs - firstPts
+                            presentationTimeUs = index * stepUs
                             flags = if ((frame.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0) MediaCodec.BUFFER_FLAG_KEY_FRAME else 0
                         }
                         muxer.writeSampleData(track, frame.asByteBuffer(), info)
@@ -228,17 +271,49 @@ class PrecorderEngine(private val context: Context) {
         codec?.release()
     }
 
+
+    private fun computeOrientationHint(settings: PrecorderSettings, deviceSurfaceRotation: Int): Int {
+        val deviceDegrees = when (deviceSurfaceRotation) {
+            Surface.ROTATION_90 -> 90
+            Surface.ROTATION_180 -> 180
+            Surface.ROTATION_270 -> 270
+            else -> 0
+        }
+
+        val sensorOrientation = runCatching {
+            val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+            val id = settings.cameraId ?: return@runCatching 90
+            val chars = manager.getCameraCharacteristics(id)
+            chars.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90
+        }.getOrDefault(90)
+
+        return if (settings.lensFacing == CameraSelector.LENS_FACING_FRONT) {
+            (360 - ((sensorOrientation + deviceDegrees) % 360)) % 360
+        } else {
+            (sensorOrientation - deviceDegrees + 360) % 360
+        }
+    }
+
     private fun createOutputTarget(settings: PrecorderSettings): OutputTarget? {
         val fileName = "precorder_${System.currentTimeMillis()}.mp4"
         val resolver = context.contentResolver
 
-        settings.outputFolderUri?.let { folderUriString ->
-            runCatching {
-                val folder = DocumentFile.fromTreeUri(context, Uri.parse(folderUriString)) ?: return@runCatching null
-                val file = folder.createFile("video/mp4", fileName) ?: return@runCatching null
-                val pfd = resolver.openFileDescriptor(file.uri, "w") ?: return@runCatching null
-                return OutputTarget(uri = file.uri, fileDescriptor = pfd.fileDescriptor, closeable = pfd)
-            }.getOrNull()?.let { return it }
+        val configuredFolder = settings.outputFolderUri
+        if (!configuredFolder.isNullOrBlank()) {
+            try {
+                val folder = DocumentFile.fromTreeUri(context, configuredFolder.toUri())
+                if (folder != null) {
+                    val file = folder.createFile("video/mp4", fileName)
+                    if (file != null) {
+                        val pfd = resolver.openFileDescriptor(file.uri, "w")
+                        if (pfd != null) {
+                            return OutputTarget(uri = file.uri, fileDescriptor = pfd.fileDescriptor, closeable = pfd)
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Configured folder unavailable, fallback to MediaStore", e)
+            }
         }
 
         val values = ContentValues().apply {
@@ -273,7 +348,7 @@ class PrecorderEngine(private val context: Context) {
         val uvSize = ySize / 2
         val out = ByteArray(ySize + uvSize)
 
-        copyPlane(yPlane.buffer, yPlane.rowStride, yPlane.pixelStride, image.width, image.height, out, 0)
+        copyPlane(yPlane.buffer, yPlane.rowStride, yPlane.pixelStride, image.width, image.height, out)
 
         val chromaHeight = image.height / 2
         val chromaWidth = image.width / 2
@@ -297,10 +372,9 @@ class PrecorderEngine(private val context: Context) {
         pixelStride: Int,
         width: Int,
         height: Int,
-        out: ByteArray,
-        outOffset: Int
+        out: ByteArray
     ) {
-        var offset = outOffset
+        var offset = 0
         for (row in 0 until height) {
             for (col in 0 until width) {
                 val index = row * rowStride + col * pixelStride

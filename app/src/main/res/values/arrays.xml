@@ -8,6 +8,28 @@
         <item>10</item>
     </string-array>
 
+    <string-array name="aspect_entries">
+        <item>16:9 (Standard)</item>
+        <item>4:3</item>
+        <item>16:10</item>
+    </string-array>
+    <string-array name="aspect_values">
+        <item>16:9</item>
+        <item>4:3</item>
+        <item>16:10</item>
+    </string-array>
+
+    <string-array name="playback_entries">
+        <item>24 fps</item>
+        <item>30 fps</item>
+        <item>60 fps</item>
+    </string-array>
+    <string-array name="playback_values">
+        <item>24</item>
+        <item>30</item>
+        <item>60</item>
+    </string-array>
+
     <string-array name="lens_entries">
         <item>Rückkamera</item>
         <item>Frontkamera</item>
