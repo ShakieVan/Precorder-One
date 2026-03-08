@@ -21,6 +21,7 @@ import androidx.camera.camera2.interop.Camera2CameraInfo
 import androidx.camera.camera2.interop.Camera2Interop
 import androidx.camera.camera2.interop.CaptureRequestOptions
 import androidx.camera.camera2.interop.ExperimentalCamera2Interop
+import androidx.camera.core.AspectRatio
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.FocusMeteringAction
@@ -218,8 +219,14 @@ class PrecorderEngine(private val context: Context) {
     @Suppress("DEPRECATION")
     private fun Preview.Builder.applyAspect(aspect: String): Preview.Builder {
         when (aspect) {
-            "4:3" -> setTargetResolution(if (forceLowProfile) Size(480, 360) else Size(640, 480))
-            else -> setTargetResolution(if (forceLowProfile) Size(640, 360) else Size(854, 480))
+            "4:3" -> {
+                setTargetAspectRatio(AspectRatio.RATIO_4_3)
+                if (forceLowProfile) setTargetResolution(Size(480, 360))
+            }
+            else -> {
+                setTargetAspectRatio(AspectRatio.RATIO_16_9)
+                if (forceLowProfile) setTargetResolution(Size(640, 360))
+            }
         }
         return this
     }
@@ -227,8 +234,14 @@ class PrecorderEngine(private val context: Context) {
     @Suppress("DEPRECATION")
     private fun ImageAnalysis.Builder.applyAspect(aspect: String): ImageAnalysis.Builder {
         when (aspect) {
-            "4:3" -> setTargetResolution(if (forceLowProfile) Size(480, 360) else Size(640, 480))
-            else -> setTargetResolution(if (forceLowProfile) Size(640, 360) else Size(854, 480))
+            "4:3" -> {
+                setTargetAspectRatio(AspectRatio.RATIO_4_3)
+                if (forceLowProfile) setTargetResolution(Size(480, 360))
+            }
+            else -> {
+                setTargetAspectRatio(AspectRatio.RATIO_16_9)
+                if (forceLowProfile) setTargetResolution(Size(640, 360))
+            }
         }
         return this
     }
@@ -248,7 +261,7 @@ class PrecorderEngine(private val context: Context) {
         val ranges = chars.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES).orEmpty()
         if (ranges.isEmpty()) return null
 
-        // Prefer a stable "up to target" range (e.g. [15,60]) to avoid CameraX option merge conflicts.
+        ranges.firstOrNull { it.lower == targetFps && it.upper == targetFps }?.let { return it }
         ranges.filter { it.upper == targetFps }.minByOrNull { it.lower }?.let { return it }
 
         val containing = ranges.filter { targetFps in it.lower..it.upper }
@@ -525,6 +538,7 @@ class PrecorderEngine(private val context: Context) {
                         muxer.writeSampleData(track, frame.asByteBuffer(), info)
                         wroteSamples = true
                     }
+                    if (!wroteSamples) error("No media samples written")
                 } finally {
                     if (muxerStarted && wroteSamples) runCatching { muxer.stop() }
                     runCatching { muxer.release() }
