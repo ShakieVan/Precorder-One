@@ -243,8 +243,10 @@ class PrecorderEngine(private val context: Context) {
         val ranges = chars.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES).orEmpty()
         if (ranges.isEmpty()) return null
 
+        // Prefer a stable "up to target" range (e.g. [15,60]) to avoid CameraX option merge conflicts.
+        ranges.filter { it.upper == targetFps }.minByOrNull { it.lower }?.let { return it }
+
         val containing = ranges.filter { targetFps in it.lower..it.upper }
-        containing.firstOrNull { it.lower == targetFps && it.upper == targetFps }?.let { return it }
         containing.minByOrNull { abs(it.upper - targetFps) + abs(it.lower - targetFps) }?.let { return it }
         return ranges.maxByOrNull { it.upper }
     }
@@ -362,9 +364,8 @@ class PrecorderEngine(private val context: Context) {
     }
 
     private fun ensureCodec(image: ImageProxy, settings: PrecorderSettings) {
-        val targetSize = computeEncodeSize(image.width, image.height, settings.aspectRatio)
-        val width = targetSize.width
-        val height = targetSize.height
+        val width = image.width
+        val height = image.height
 
         if (formatReady && (width != formatWidth || height != formatHeight)) {
             // Analyzer format changed: cleanly restart encoder state.
@@ -423,7 +424,7 @@ class PrecorderEngine(private val context: Context) {
         val inputBuffer = codec.getInputBuffer(inputIndex) ?: return
         inputBuffer.clear()
 
-        val yuv = yuv420888ToNv12(image, formatWidth, formatHeight)
+        val yuv = yuv420888ToNv12(image)
         inputBuffer.put(yuv)
         val ptsUs = image.imageInfo.timestamp / 1_000
         codec.queueInputBuffer(inputIndex, 0, yuv.size, ptsUs, 0)
@@ -709,30 +710,13 @@ class PrecorderEngine(private val context: Context) {
         )
     }
 
-    private fun computeEncodeSize(inputWidth: Int, inputHeight: Int, aspect: String): Size {
-        val (ratioW, ratioH) = if (aspect == "4:3") 4 to 3 else 16 to 9
-        var width = inputWidth
-        var height = inputHeight
-        if (inputWidth * ratioH > inputHeight * ratioW) {
-            width = inputHeight * ratioW / ratioH
-        } else {
-            height = inputWidth * ratioH / ratioW
-        }
-        width = (width / 2) * 2
-        height = (height / 2) * 2
-        return Size(width.coerceAtLeast(2), height.coerceAtLeast(2))
-    }
-
-    private fun yuv420888ToNv12(image: ImageProxy, targetWidth: Int, targetHeight: Int): ByteArray {
+    private fun yuv420888ToNv12(image: ImageProxy): ByteArray {
         require(image.format == ImageFormat.YUV_420_888)
         val yPlane = image.planes[0]
         val uPlane = image.planes[1]
         val vPlane = image.planes[2]
 
-        val cropLeft = (((image.width - targetWidth).coerceAtLeast(0)) / 2) and 0x7ffffffe
-        val cropTop = (((image.height - targetHeight).coerceAtLeast(0)) / 2) and 0x7ffffffe
-
-        val ySize = targetWidth * targetHeight
+        val ySize = image.width * image.height
         val uvSize = ySize / 2
         val requiredSize = ySize + uvSize
         val out = if (reusableYuvBuffer?.size == requiredSize) {
@@ -741,31 +725,19 @@ class PrecorderEngine(private val context: Context) {
             ByteArray(requiredSize).also { reusableYuvBuffer = it }
         }
 
-        var outOffset = 0
-        val yBuffer = yPlane.buffer
-        for (row in 0 until targetHeight) {
-            val srcRow = cropTop + row
-            val rowBase = srcRow * yPlane.rowStride + cropLeft * yPlane.pixelStride
-            for (col in 0 until targetWidth) {
-                out[outOffset++] = yBuffer.get(rowBase + col * yPlane.pixelStride)
-            }
-        }
+        copyPlane(yPlane.buffer, yPlane.rowStride, yPlane.pixelStride, image.width, image.height, out)
 
-        val chromaHeight = targetHeight / 2
-        val chromaWidth = targetWidth / 2
+        val chromaHeight = image.height / 2
+        val chromaWidth = image.width / 2
         var offset = ySize
         val uBuffer = uPlane.buffer
         val vBuffer = vPlane.buffer
-        val chromaCropLeft = cropLeft / 2
-        val chromaCropTop = cropTop / 2
         for (row in 0 until chromaHeight) {
-            val srcRow = chromaCropTop + row
-            val uRowOffset = srcRow * uPlane.rowStride
-            val vRowOffset = srcRow * vPlane.rowStride
+            val uRowOffset = row * uPlane.rowStride
+            val vRowOffset = row * vPlane.rowStride
             for (col in 0 until chromaWidth) {
-                val srcCol = chromaCropLeft + col
-                val uIndex = uRowOffset + srcCol * uPlane.pixelStride
-                val vIndex = vRowOffset + srcCol * vPlane.pixelStride
+                val uIndex = uRowOffset + col * uPlane.pixelStride
+                val vIndex = vRowOffset + col * vPlane.pixelStride
                 out[offset++] = uBuffer.get(uIndex)
                 out[offset++] = vBuffer.get(vIndex)
             }
