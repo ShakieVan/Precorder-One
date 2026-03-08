@@ -59,7 +59,7 @@ class SettingsFragment : PreferenceFragmentCompat() {
         fun updateFpsOptions(selectedId: String?) {
             val id = selectedId ?: return
             val chars = manager.getCameraCharacteristics(id)
-            val supported = collectSupportedFps(chars)
+            val supported = collectAppSupportedFps(chars)
                 .filter { it >= 24 }
                 .distinct()
                 .sorted()
@@ -84,9 +84,11 @@ class SettingsFragment : PreferenceFragmentCompat() {
                 val chars = manager.getCameraCharacteristics(id)
                 val focal = chars.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)?.firstOrNull()
                 val focalLabel = focal?.let { String.format("%.1fmm", it) } ?: "?mm"
-                val maxFps = collectSupportedFps(chars).maxOrNull() ?: 30
+                val appMaxFps = collectAppSupportedFps(chars).maxOrNull() ?: 30
+                val highSpeedMaxFps = collectHighSpeedFps(chars).maxOrNull()
                 val lensName = if (desiredLens == CameraCharacteristics.LENS_FACING_FRONT) "Front" else "Back"
-                "$lensName ${index + 1} (ID $id, $focalLabel, bis $maxFps fps)"
+                val hsLabel = highSpeedMaxFps?.let { ", HS bis $it fps" } ?: ""
+                "$lensName ${index + 1} (ID $id, $focalLabel, App bis $appMaxFps fps$hsLabel)"
             }
 
             cameraPref.entries = labels.toTypedArray()
@@ -126,12 +128,15 @@ class SettingsFragment : PreferenceFragmentCompat() {
         refreshCameraEntries()
     }
 
-    private fun collectSupportedFps(chars: CameraCharacteristics): List<Int> {
+    private fun collectAppSupportedFps(chars: CameraCharacteristics): List<Int> {
         val values = mutableSetOf<Int>()
         chars.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
-            ?.forEach { range -> values.addAll(supportedValuesFromRange(range)) }
+            ?.forEach { range -> values.addAll(supportedValuesFromAeRange(range)) }
+        return values.toList()
+    }
 
-        // Viele Geräte liefern hohe FPS nur über High-Speed-Profile.
+    private fun collectHighSpeedFps(chars: CameraCharacteristics): List<Int> {
+        val values = mutableSetOf<Int>()
         val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
         map?.highSpeedVideoFpsRanges?.forEach { range ->
             values.add(range.upper)
@@ -140,13 +145,14 @@ class SettingsFragment : PreferenceFragmentCompat() {
         return values.toList()
     }
 
-    private fun supportedValuesFromRange(range: Range<Int>): List<Int> {
+    private fun supportedValuesFromAeRange(range: Range<Int>): List<Int> {
         val values = mutableListOf<Int>()
         val candidates = listOf(24, 25, 30, 48, 50, 60, 90, 100, 120, 144, 240)
-        candidates.forEach {
-            if (it in range.lower..range.upper) values.add(it)
+        candidates.forEach { candidate ->
+            if (candidate <= 60 && candidate in range.lower..range.upper) values.add(candidate)
+            if (candidate > 60 && range.lower == candidate && range.upper == candidate) values.add(candidate)
         }
-        if (range.upper !in values) values.add(range.upper)
+        if (range.upper <= 60 && range.upper !in values) values.add(range.upper)
         return values
     }
 
