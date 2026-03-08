@@ -5,6 +5,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
 import android.view.KeyEvent
+import android.view.MotionEvent
 import android.view.OrientationEventListener
 import android.view.Surface
 import android.widget.Toast
@@ -103,6 +104,14 @@ class MainActivity : AppCompatActivity() {
 
         binding.btnTrigger.setOnClickListener { onTrigger() }
         binding.btnSettings.setOnClickListener { startActivity(Intent(this, SettingsActivity::class.java)) }
+        binding.previewView.setOnTouchListener { _, event ->
+            if (event.actionMasked == MotionEvent.ACTION_UP) {
+                val focused = engine.focusAt(binding.previewView, event.x, event.y)
+                if (!focused) Toast.makeText(this, R.string.focus_failed, Toast.LENGTH_SHORT).show()
+                return@setOnTouchListener true
+            }
+            event.actionMasked == MotionEvent.ACTION_DOWN
+        }
         binding.previewView.previewStreamState.observe(this) { state ->
             if (state == PreviewView.StreamState.STREAMING) {
                 engine.setManualExposurePercent(exposurePercent)

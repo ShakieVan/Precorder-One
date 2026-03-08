@@ -23,6 +23,7 @@ import androidx.camera.camera2.interop.CaptureRequestOptions
 import androidx.camera.camera2.interop.ExperimentalCamera2Interop
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
+import androidx.camera.core.FocusMeteringAction
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
@@ -92,6 +93,7 @@ class PrecorderEngine(private val context: Context) {
     private var pendingFpsApply: Boolean = true
     private var lastFpsApplyMs: Long = 0L
     private var reusableYuvBuffer: ByteArray? = null
+    private val codecLock = Any()
 
 
     fun getManualExposurePercent(): Int = manualExposurePercent
@@ -140,6 +142,19 @@ class PrecorderEngine(private val context: Context) {
 
     fun applyZoom(digitalZoom: Float) {
         camera?.cameraControl?.setZoomRatio(digitalZoom)
+    }
+
+    fun focusAt(previewView: PreviewView, x: Float, y: Float): Boolean {
+        val cam = camera ?: return false
+        val point = previewView.meteringPointFactory.createPoint(x, y)
+        val action = FocusMeteringAction.Builder(
+            point,
+            FocusMeteringAction.FLAG_AF or FocusMeteringAction.FLAG_AE
+        ).disableAutoCancel().build()
+        return runCatching {
+            cam.cameraControl.startFocusAndMetering(action)
+            true
+        }.getOrDefault(false)
     }
 
     fun getBufferFillRatio(): Float {
@@ -201,8 +216,8 @@ class PrecorderEngine(private val context: Context) {
     @Suppress("DEPRECATION")
     private fun Preview.Builder.applyAspect(aspect: String): Preview.Builder {
         when (aspect) {
-            "4:3" -> setTargetResolution(if (forceLowProfile) Size(480, 360) else Size(640, 480))
-            else -> setTargetResolution(if (forceLowProfile) Size(640, 360) else Size(854, 480))
+            "4:3" -> setTargetResolution(if (forceLowProfile) Size(640, 480) else Size(1280, 960))
+            else -> setTargetResolution(if (forceLowProfile) Size(640, 360) else Size(1280, 720))
         }
         return this
     }
@@ -210,10 +225,14 @@ class PrecorderEngine(private val context: Context) {
     @Suppress("DEPRECATION")
     private fun ImageAnalysis.Builder.applyAspect(aspect: String): ImageAnalysis.Builder {
         when (aspect) {
-            "4:3" -> setTargetResolution(if (forceLowProfile) Size(480, 360) else Size(640, 480))
-            else -> setTargetResolution(if (forceLowProfile) Size(640, 360) else Size(854, 480))
+            "4:3" -> setTargetResolution(if (forceLowProfile) Size(640, 480) else Size(1280, 960))
+            else -> setTargetResolution(if (forceLowProfile) Size(640, 360) else Size(1280, 720))
         }
         return this
+    }
+
+    private fun shouldUseManualSensorMode(targetFps: Int, chars: CameraCharacteristics): Boolean {
+        return targetFps >= 120 && supportsManualSensor(chars)
     }
 
     private fun selectFpsRange(cameraId: String?, targetFps: Int): Range<Int>? {
@@ -245,7 +264,7 @@ class PrecorderEngine(private val context: Context) {
             manager.getCameraCharacteristics(cameraId)
         }.getOrNull() ?: return
 
-        val manualMode = targetFps >= 60 && supportsManualSensor(chars)
+        val manualMode = shouldUseManualSensorMode(targetFps, chars)
         val afMode = if (manualMode) {
             CaptureRequest.CONTROL_AF_MODE_OFF
         } else {
@@ -282,7 +301,7 @@ class PrecorderEngine(private val context: Context) {
             manager.getCameraCharacteristics(cameraId)
         }.getOrNull() ?: return false
 
-        val manualMode = settings.targetFps >= 60 && supportsManualSensor(chars)
+        val manualMode = shouldUseManualSensorMode(settings.targetFps, chars)
         if (manualMode) return true
 
         val fpsRange = selectFpsRange(chars, settings.targetFps) ?: return false
@@ -317,7 +336,7 @@ class PrecorderEngine(private val context: Context) {
             val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
             manager.getCameraCharacteristics(cameraId)
         }.getOrNull() ?: return false
-        if (!(settings.targetFps >= 60 && supportsManualSensor(chars))) return true
+        if (!shouldUseManualSensorMode(settings.targetFps, chars)) return true
 
         val frameDurationNs = (1_000_000_000L / settings.targetFps.coerceAtLeast(1))
         val exposureNs = (frameDurationNs * manualExposurePercent.coerceIn(20, 100) / 100L).coerceIn(500_000L, frameDurationNs)
@@ -357,8 +376,14 @@ class PrecorderEngine(private val context: Context) {
         val height = image.height
 
         if (formatReady && (width != formatWidth || height != formatHeight)) {
-            // Formatwechsel (z.B. 16:9 -> 4:3): Encoder+Puffer sauber neu aufbauen.
-            resetEncodingState()
+            // Analyzer format changed: cleanly restart encoder state.
+            formatReady = false
+            formatWidth = 0
+            formatHeight = 0
+            encoderOutputFormat = null
+            runCatching { codec?.stop() }
+            runCatching { codec?.release() }
+            codec = null
             ringBuffer = EncodedFrameRingBuffer(retentionUs)
             notifyBufferProgress(0f)
         }
@@ -384,14 +409,16 @@ class PrecorderEngine(private val context: Context) {
 
     private fun encodeImage(image: ImageProxy, settings: PrecorderSettings) {
         try {
-            ensureCodec(image, settings)
             camera?.let {
                 maybeApplyRuntimeFpsOverride(it, settings)
                 maybeApplyRuntimeExposureOverride(it, settings)
             }
-            val activeCodec = codec ?: return
-            queueInput(activeCodec, image)
-            drainCodec(activeCodec)
+            synchronized(codecLock) {
+                ensureCodec(image, settings)
+                val activeCodec = codec ?: return
+                queueInput(activeCodec, image)
+                drainCodec(activeCodec)
+            }
         } catch (e: Exception) {
             Log.e(TAG, "Encoding error", e)
         } finally {
@@ -469,10 +496,13 @@ class PrecorderEngine(private val context: Context) {
 
             val success = runCatching {
                 val outputFd = output.fileDescriptor ?: error("No output file descriptor")
-                MediaMuxer(outputFd, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4).useMuxer { muxer ->
+                val muxer = MediaMuxer(outputFd, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+                var muxerStarted = false
+                try {
                     muxer.setOrientationHint(computeOrientationHint(settings, deviceSurfaceRotation))
                     val track = muxer.addTrack(format)
                     muxer.start()
+                    muxerStarted = true
 
                     val stepUs = 1_000_000L / settings.playbackFps.coerceAtLeast(1)
                     frames.forEachIndexed { index, frame ->
@@ -484,6 +514,9 @@ class PrecorderEngine(private val context: Context) {
                         }
                         muxer.writeSampleData(track, frame.asByteBuffer(), info)
                     }
+                } finally {
+                    if (muxerStarted) runCatching { muxer.stop() }
+                    runCatching { muxer.release() }
                 }
                 output.markCompleted()
                 true
@@ -503,32 +536,34 @@ class PrecorderEngine(private val context: Context) {
     }
 
     private fun resetEncodingState() {
-        ringBuffer.clear()
-        notifyBufferProgress(0f)
-        encoderOutputFormat = null
-        lastSamplePtsUs = -1L
-        fpsWindowStartPtsUs = -1L
-        fpsWindowFrames = 0
-        onMeasuredFpsChanged?.invoke(0f)
-        onDebugStatsChanged?.invoke(0f, 0f, 0f, 0f)
-        sourceWindowStartUs = -1L
-        sourceWindowFrames = 0
-        sourceFps = 0f
-        inputWindowStartUs = -1L
-        inputWindowFrames = 0
-        inputFps = 0f
-        encodedWindowStartUs = -1L
-        encodedWindowFrames = 0
-        encodedFps = 0f
-        pendingExposureApply = true
-        pendingFpsApply = true
-        formatReady = false
-        formatWidth = 0
-        formatHeight = 0
-        reusableYuvBuffer = null
-        runCatching { codec?.stop() }
-        runCatching { codec?.release() }
-        codec = null
+        synchronized(codecLock) {
+            ringBuffer.clear()
+            notifyBufferProgress(0f)
+            encoderOutputFormat = null
+            lastSamplePtsUs = -1L
+            fpsWindowStartPtsUs = -1L
+            fpsWindowFrames = 0
+            onMeasuredFpsChanged?.invoke(0f)
+            onDebugStatsChanged?.invoke(0f, 0f, 0f, 0f)
+            sourceWindowStartUs = -1L
+            sourceWindowFrames = 0
+            sourceFps = 0f
+            inputWindowStartUs = -1L
+            inputWindowFrames = 0
+            inputFps = 0f
+            encodedWindowStartUs = -1L
+            encodedWindowFrames = 0
+            encodedFps = 0f
+            pendingExposureApply = true
+            pendingFpsApply = true
+            formatReady = false
+            formatWidth = 0
+            formatHeight = 0
+            reusableYuvBuffer = null
+            runCatching { codec?.stop() }
+            runCatching { codec?.release() }
+            codec = null
+        }
     }
 
     private fun notifyBufferProgress(value: Float) {
@@ -769,14 +804,5 @@ class PrecorderEngine(private val context: Context) {
     companion object {
         private const val TAG = "PrecorderEngine"
         private const val MIME_TYPE = "video/avc"
-    }
-}
-
-private inline fun MediaMuxer.useMuxer(block: (MediaMuxer) -> Unit) {
-    try {
-        block(this)
-    } finally {
-        runCatching { stop() }
-        runCatching { release() }
     }
 }

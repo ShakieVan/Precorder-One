@@ -9,6 +9,7 @@
     <string name="settings_button">Konfiguration</string>
     <string name="saved_success">Video gespeichert: %1$s</string>
     <string name="saved_failed">Speichern fehlgeschlagen</string>
+    <string name="focus_failed">Fokus aktuell nicht verfügbar</string>
     <string name="debug_fps_initial">FPS: --.-</string>
     <string name="debug_fps">Src: %1$.1f | Q: %2$.1f | Enc: %3$.1f | Drop: %4$.0f%% | Ziel: %5$d</string>
     <string name="exposure_initial">Belichtung: --%</string>
