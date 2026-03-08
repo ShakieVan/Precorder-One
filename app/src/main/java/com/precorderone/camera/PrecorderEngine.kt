@@ -525,8 +525,16 @@ class PrecorderEngine(private val context: Context) {
     }
 
     fun release() {
-        analysis?.clearAnalyzer()
+        pauseSession()
         analyzerExecutor.shutdown()
+        resetEncodingState()
+    }
+
+    fun pauseSession() {
+        analysis?.clearAnalyzer()
+        analysis = null
+        camera = null
+        runCatching { cameraProvider?.unbindAll() }
         resetEncodingState()
     }
 

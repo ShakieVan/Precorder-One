@@ -14,6 +14,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.camera.view.PreviewView
 import com.precorderone.camera.PrecorderEngine
+import com.precorderone.data.PrecorderSettings
 import com.precorderone.data.SettingsRepository
 import com.precorderone.databinding.ActivityMainBinding
 import com.precorderone.ui.SettingsActivity
@@ -35,6 +36,8 @@ class MainActivity : AppCompatActivity() {
     private var dropRate = 0f
     private var triggerArmed = false
     private var exposurePercent = 55
+    private var hasActiveBinding = false
+    private var lastBoundSettings: PrecorderSettings? = null
 
     private val permissionsLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -130,6 +133,10 @@ class MainActivity : AppCompatActivity() {
     override fun onPause() {
         super.onPause()
         orientationListener.disable()
+        if (hasActiveBinding) {
+            engine.pauseSession()
+            hasActiveBinding = false
+        }
     }
 
     private fun requestPermissionsIfNeeded() {
@@ -141,7 +148,12 @@ class MainActivity : AppCompatActivity() {
 
     private fun bindCamera() {
         val settings = settingsRepository.load()
+        if (hasActiveBinding && settings == lastBoundSettings) {
+            return
+        }
         engine.bind(this, binding.previewView, settings)
+        hasActiveBinding = true
+        lastBoundSettings = settings
         isRecordingLoop = true
         bufferFill = 0f
         isSaving = false
