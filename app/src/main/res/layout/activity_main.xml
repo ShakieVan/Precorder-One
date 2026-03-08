@@ -105,6 +105,85 @@
             android:src="@drawable/ic_orientation_pointer" />
     </FrameLayout>
 
+    <LinearLayout
+        android:id="@+id/zoomControlsContainer"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom|center_horizontal"
+        android:layout_marginBottom="92dp"
+        android:background="#66000000"
+        android:gravity="center"
+        android:orientation="horizontal"
+        android:padding="6dp">
+
+        <Button
+            android:id="@+id/btnZoom06"
+            android:layout_width="58dp"
+            android:layout_height="38dp"
+            android:layout_marginEnd="4dp"
+            android:background="@drawable/bg_zoom_button_idle"
+            android:gravity="center"
+            android:includeFontPadding="false"
+            android:minHeight="0dp"
+            android:minWidth="0dp"
+            android:paddingHorizontal="6dp"
+            android:paddingVertical="2dp"
+            android:text="@string/zoom_06"
+            android:textAllCaps="false"
+            android:textColor="@android:color/white"
+            android:textSize="12sp" />
+
+        <Button
+            android:id="@+id/btnZoom1"
+            android:layout_width="58dp"
+            android:layout_height="38dp"
+            android:layout_marginEnd="4dp"
+            android:background="@drawable/bg_zoom_button_idle"
+            android:gravity="center"
+            android:includeFontPadding="false"
+            android:minHeight="0dp"
+            android:minWidth="0dp"
+            android:paddingHorizontal="6dp"
+            android:paddingVertical="2dp"
+            android:text="@string/zoom_1"
+            android:textAllCaps="false"
+            android:textColor="@android:color/white"
+            android:textSize="12sp" />
+
+        <Button
+            android:id="@+id/btnZoom3"
+            android:layout_width="58dp"
+            android:layout_height="38dp"
+            android:layout_marginEnd="4dp"
+            android:background="@drawable/bg_zoom_button_idle"
+            android:gravity="center"
+            android:includeFontPadding="false"
+            android:minHeight="0dp"
+            android:minWidth="0dp"
+            android:paddingHorizontal="6dp"
+            android:paddingVertical="2dp"
+            android:text="@string/zoom_3"
+            android:textAllCaps="false"
+            android:textColor="@android:color/white"
+            android:textSize="12sp" />
+
+        <Button
+            android:id="@+id/btnZoom5"
+            android:layout_width="58dp"
+            android:layout_height="38dp"
+            android:background="@drawable/bg_zoom_button_idle"
+            android:gravity="center"
+            android:includeFontPadding="false"
+            android:minHeight="0dp"
+            android:minWidth="0dp"
+            android:paddingHorizontal="6dp"
+            android:paddingVertical="2dp"
+            android:text="@string/zoom_5"
+            android:textAllCaps="false"
+            android:textColor="@android:color/white"
+            android:textSize="12sp" />
+    </LinearLayout>
+
     <ImageButton
         android:id="@+id/btnTrigger"
         android:layout_width="64dp"

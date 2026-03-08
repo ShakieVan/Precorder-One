@@ -10,6 +10,7 @@ import android.view.OrientationEventListener
 import android.view.Surface
 import android.view.View
 import android.view.ViewConfiguration
+import android.widget.Button
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -48,6 +49,8 @@ class MainActivity : AppCompatActivity() {
     private var touchSlopPx = 0
     private var focusLocked = false
     private var lastPipelineToast: String? = null
+    private var availableNativeZoomSteps: List<Float> = listOf(1f)
+    private var currentNativeZoomRatio: Float = 1f
 
     private val permissionsLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -96,6 +99,13 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }
+        engine.onNativeZoomChanged = { steps, current ->
+            runOnUiThread {
+                availableNativeZoomSteps = steps
+                currentNativeZoomRatio = current
+                updateZoomUi()
+            }
+        }
 
         exposurePercent = engine.getManualExposurePercent()
         binding.exposureSlider.max = 80
@@ -135,6 +145,10 @@ class MainActivity : AppCompatActivity() {
             updateFocusUi()
         }
         binding.btnSettings.setOnClickListener { startActivity(Intent(this, SettingsActivity::class.java)) }
+        binding.btnZoom06.setOnClickListener { onNativeZoomStepSelected(0.6f) }
+        binding.btnZoom1.setOnClickListener { onNativeZoomStepSelected(1f) }
+        binding.btnZoom3.setOnClickListener { onNativeZoomStepSelected(3f) }
+        binding.btnZoom5.setOnClickListener { onNativeZoomStepSelected(5f) }
         binding.previewView.setOnTouchListener { _, event -> handlePreviewTouch(event, allowTapFocus = true, highSpeedPreview = false) }
         binding.highSpeedPreviewView.setOnTouchListener { _, event -> handlePreviewTouch(event, allowTapFocus = true, highSpeedPreview = true) }
         binding.previewView.previewStreamState.observe(this) { state ->
@@ -143,6 +157,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
         updateFocusUi()
+        updateZoomUi()
 
         requestPermissionsIfNeeded()
     }
@@ -184,8 +199,22 @@ class MainActivity : AppCompatActivity() {
         isSaving = false
         triggerArmed = false
         focusLocked = false
+        availableNativeZoomSteps = engine.getNativeTeleZoomSteps()
+        currentNativeZoomRatio = engine.getCurrentNativeZoomRatio()
         updateFocusUi()
+        updateZoomUi()
         updateBufferUi()
+    }
+
+    private fun onNativeZoomStepSelected(step: Float) {
+        if (!availableNativeZoomSteps.any { abs(it - step) < 0.001f }) return
+        val applied = engine.setNativeTeleZoomRatio(step)
+        if (!applied) {
+            Toast.makeText(this, R.string.zoom_set_failed, Toast.LENGTH_SHORT).show()
+            return
+        }
+        currentNativeZoomRatio = step
+        updateZoomUi()
     }
 
     private fun handlePreviewTouch(
@@ -238,6 +267,35 @@ class MainActivity : AppCompatActivity() {
     private fun updateFocusUi() {
         val canShow = focusLocked && (binding.previewView.visibility == View.VISIBLE || binding.highSpeedPreviewView.visibility == View.VISIBLE)
         binding.btnFocusAuto.visibility = if (canShow) View.VISIBLE else View.GONE
+    }
+
+    private fun updateZoomUi() {
+        val steps = listOf(
+            0.6f to binding.btnZoom06,
+            1f to binding.btnZoom1,
+            3f to binding.btnZoom3,
+            5f to binding.btnZoom5
+        )
+        val hasAny = availableNativeZoomSteps.isNotEmpty()
+        binding.zoomControlsContainer.visibility = if (hasAny) View.VISIBLE else View.GONE
+        steps.forEach { (step, button) ->
+            val available = availableNativeZoomSteps.any { abs(it - step) < 0.001f }
+            button.visibility = if (available) View.VISIBLE else View.GONE
+            setZoomButtonState(button, available && abs(currentNativeZoomRatio - step) < 0.001f)
+        }
+    }
+
+    private fun setZoomButtonState(button: Button, selected: Boolean) {
+        button.alpha = if (selected) 1f else 0.65f
+        button.setBackgroundResource(
+            if (selected) R.drawable.bg_zoom_button_selected else R.drawable.bg_zoom_button_idle
+        )
+        button.setTextColor(
+            ContextCompat.getColor(
+                this,
+                if (selected) android.R.color.black else android.R.color.white
+            )
+        )
     }
 
     private fun onTrigger() {

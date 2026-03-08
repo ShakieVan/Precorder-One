@@ -8,6 +8,7 @@ import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CaptureRequest
 import android.hardware.camera2.params.MeteringRectangle
 import android.media.MediaRecorder
+import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.util.Range
@@ -42,10 +43,11 @@ internal class Camera2RecordSession(
     private var focusLockEnabled = false
     private var focusNormX = 0.5f
     private var focusNormY = 0.5f
+    private var zoomRatio = 1f
     @Volatile
     private var running = false
 
-    fun start(profile: Profile, previewView: SurfaceView, encoderSurface: Surface, torch: Boolean) {
+    fun start(profile: Profile, previewView: SurfaceView, encoderSurface: Surface, torch: Boolean, initialZoomRatio: Float) {
         stop()
         running = true
         openRequested = false
@@ -53,6 +55,7 @@ internal class Camera2RecordSession(
         activeEncoderSurface = encoderSurface
         activePreviewView = previewView
         torchEnabled = torch
+        zoomRatio = clampZoomRatio(profile, initialZoomRatio)
         ensureCameraThread()
         val holder = previewView.holder
         holder.setFixedSize(profile.size.width, profile.size.height)
@@ -80,6 +83,18 @@ internal class Camera2RecordSession(
         val handler = cameraHandler ?: return
         val request = buildRequest(afTriggerStart = false) ?: return
         runCatching { session.setRepeatingRequest(request, null, handler) }
+    }
+
+    fun setZoomRatio(requestedZoomRatio: Float): Boolean {
+        val profile = activeProfile ?: return false
+        zoomRatio = clampZoomRatio(profile, requestedZoomRatio)
+        val session = captureSession ?: return false
+        val handler = cameraHandler ?: return false
+        val request = buildRequest(afTriggerStart = false) ?: return false
+        return runCatching {
+            session.setRepeatingRequest(request, null, handler)
+            true
+        }.getOrDefault(false)
     }
 
     fun focusAt(normX: Float, normY: Float): Boolean {
@@ -227,7 +242,17 @@ internal class Camera2RecordSession(
                 set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO)
                 set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_IDLE)
             }
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                set(CaptureRequest.CONTROL_ZOOM_RATIO, clampZoomRatio(profile, zoomRatio))
+            }
         }.build()
+    }
+
+    private fun clampZoomRatio(profile: Profile, requestedZoomRatio: Float): Float {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return 1f
+        val range = profile.characteristics.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE) ?: return 1f
+        return requestedZoomRatio.coerceIn(range.lower, range.upper)
     }
 
     private fun meteringRectangles(chars: CameraCharacteristics, normX: Float, normY: Float): Array<MeteringRectangle>? {

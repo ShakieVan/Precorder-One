@@ -1,7 +1,17 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
 }
+
+val keyProperties = Properties().apply {
+    val keyFile = rootProject.file("key.properties")
+    if (keyFile.exists()) {
+        keyFile.inputStream().use { load(it) }
+    }
+}
+val hasCustomReleaseSigning = keyProperties.getProperty("storeFile")?.isNotBlank() == true
 
 android {
     namespace = "com.precorderone"
@@ -11,8 +21,8 @@ android {
         applicationId = "com.precorderone"
         minSdk = 28
         targetSdk = 34
-        versionCode = 3
-        versionName = "1.0-RC3"
+        versionCode = 4
+        versionName = "1.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -20,9 +30,26 @@ android {
         }
     }
 
+    signingConfigs {
+        if (hasCustomReleaseSigning) {
+            create("release") {
+                storeFile = file(keyProperties.getProperty("storeFile"))
+                storePassword = keyProperties.getProperty("storePassword")
+                keyAlias = keyProperties.getProperty("keyAlias")
+                keyPassword = keyProperties.getProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = if (hasCustomReleaseSigning) {
+                signingConfigs.getByName("release")
+            } else {
+                // Fallback for local builds if no key.properties exists yet.
+                signingConfigs.getByName("debug")
+            }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"

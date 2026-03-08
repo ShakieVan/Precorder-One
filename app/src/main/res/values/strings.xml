@@ -15,4 +15,9 @@
     <string name="exposure_initial">Belichtung: --%</string>
     <string name="exposure_label">Belichtung: %1$d%%</string>
     <string name="focus_auto_button">Autofokus wieder aktivieren</string>
+    <string name="zoom_set_failed">Zoom aktuell nicht verfuegbar</string>
+    <string name="zoom_06">0.6x</string>
+    <string name="zoom_1">1x</string>
+    <string name="zoom_3">3x</string>
+    <string name="zoom_5">5x</string>
 </resources>

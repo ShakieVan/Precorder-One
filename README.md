@@ -12,7 +12,7 @@ Android app for continuous ring-buffer recording in RAM.
 This is a working prototype based on CameraX + MediaCodec.
 Depending on device vendor, additional tuning for color format/encoder may be needed.
 
-Current release candidate: `1.0-RC3`.
+Current stable release: `1.0.0`.
 
 ## Performance rule (mandatory)
 

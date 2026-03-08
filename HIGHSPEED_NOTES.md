@@ -150,13 +150,32 @@ Grund:
 ## Wichtige Guardrail: Features und FPS (verbindlich)
 
 - Der Aufnahme-/Encode-Pfad darf nicht verlangsamt werden.
-- Zoom-Feature wurde aus Performancegruenden vorerst komplett entfernt.
-- Keine Kamera-Crop-/Zoom-Operationen im laufenden Capture-Loop.
-- Falls Zoom spaeter zurueckkommt: nur mit klarer FPS-Absicherung und standardmaessig aus.
+- Zoom ist erlaubt, aber nur hardwarebasiert ueber `CONTROL_ZOOM_RATIO` (kein CPU-Crop im Livepfad).
+- Bevorzugte feste Native-Stufen: `0.6x`, `1x`, `3x`, `5x` (pro Kamera auf verfuegbare Range gefiltert).
+- Keine App-seitigen per-frame Pixelkopien fuer Zoom im laufenden Capture-Loop.
+
+## Update RC4: Native Tele Zoom + UI
+
+Implementiert:
+
+- Feste Zoom-Stufen in der Hauptansicht: `0.6x`, `1x`, `3x`, `5x`.
+- Nur verfuegbare Stufen werden angezeigt (basierend auf `CONTROL_ZOOM_RATIO_RANGE` der aktiven Kamera).
+- Zoom ist in `Camera2RecordSession` und `HighSpeedCamera2Session` angebunden (`CONTROL_ZOOM_RATIO`).
+- Zoom-Buttons optisch ueberarbeitet: zentrierter Text, angepasste Breite und klarer Rand.
+
+Log-Einordnung aus Geraetetests:
+
+- `Failed to query component interface for required system resources: 6`:
+  - typischer Codec2/Vendor-Noise auf manchen Geraeten.
+- `Unable to open libpenguin.so: ... not found`:
+  - vendorseitige optionale Bibliothek, i. d. R. nicht app-kritisch.
+- `Long monitor contention ... CameraDeviceImpl ...`:
+  - kurzfristige Blockaden bei Kamera-Reconfigure/Close sind beim Session-Wechsel erwartbar.
+  - Beobachten, aber nur bei sichtbaren Nutzungsproblemen als Bug priorisieren.
 
 ## Releasekandidat
 
-- RC2 gesetzt: `versionName = 1.0-RC2`, `versionCode = 2`.
+- RC4 gesetzt: `versionName = 1.0-RC4`, `versionCode = 4`.
 
 ## Debug-Plan fuer naechsten Chat
 

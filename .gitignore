@@ -1,0 +1,10 @@
+.gradle/
+.idea/
+build/
+app/build/
+local.properties
+
+# Android signing material (never commit)
+key.properties
+*.jks
+*.keystore
