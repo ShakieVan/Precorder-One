@@ -97,6 +97,7 @@ class PrecorderEngine(private val context: Context) {
     private val codecLock = Any()
     private val bufferLock = Any()
     private var manualSensorModeActive: Boolean = false
+    private var unsupportedExactFpsNotified: Int? = null
 
 
     fun getManualExposurePercent(): Int = manualExposurePercent
@@ -115,9 +116,11 @@ class PrecorderEngine(private val context: Context) {
         boundSettings = settings
         pendingExposureApply = true
         pendingFpsApply = true
+        unsupportedExactFpsNotified = null
         bindStartMs = System.currentTimeMillis()
         fallbackApplied = false
-        forceLowProfile = false
+        // High-FPS profile: keep analysis resolution low to reduce pipeline pressure.
+        forceLowProfile = settings.targetFps >= 120
 
         retentionUs = (settings.loopSeconds + 1) * 1_000_000L
         val key = "${settings.cameraId}|${settings.lensFacing}|${settings.targetFps}|${settings.aspectRatio}"
@@ -248,22 +251,20 @@ class PrecorderEngine(private val context: Context) {
         return this
     }
 
-    private fun shouldUseManualSensorMode(targetFps: Int, chars: CameraCharacteristics): Boolean {
-        return targetFps >= 120 && supportsManualSensor(chars)
-    }
-
-    private fun selectFpsRange(cameraId: String?, targetFps: Int): Range<Int>? {
+    private fun selectFpsRange(cameraId: String?, targetFps: Int, requireExact: Boolean = false): Range<Int>? {
         val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
         val id = cameraId ?: return null
         val chars = runCatching { manager.getCameraCharacteristics(id) }.getOrNull() ?: return null
-        return selectFpsRange(chars, targetFps)
+        return selectFpsRange(chars, targetFps, requireExact)
     }
 
-    private fun selectFpsRange(chars: CameraCharacteristics, targetFps: Int): Range<Int>? {
+    private fun selectFpsRange(chars: CameraCharacteristics, targetFps: Int, requireExact: Boolean = false): Range<Int>? {
         val ranges = chars.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES).orEmpty()
         if (ranges.isEmpty()) return null
 
         ranges.firstOrNull { it.lower == targetFps && it.upper == targetFps }?.let { return it }
+        if (requireExact) return null
+
         ranges.filter { it.upper == targetFps }.minByOrNull { it.lower }?.let { return it }
 
         val containing = ranges.filter { targetFps in it.lower..it.upper }
@@ -276,25 +277,15 @@ class PrecorderEngine(private val context: Context) {
         previewBuilder: Preview.Builder,
         analysisBuilder: ImageAnalysis.Builder
     ) {
-        val targetFps = settings.targetFps
-        val cameraId = settings.cameraId ?: return
-        val chars = runCatching {
-            val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
-            manager.getCameraCharacteristics(cameraId)
-        }.getOrNull() ?: return
+        settings.cameraId ?: return
 
-        val manualMode = shouldUseManualSensorMode(targetFps, chars)
-        manualSensorModeActive = manualMode
+        manualSensorModeActive = false
 
         val previewExt = Camera2Interop.Extender(previewBuilder)
         val analysisExt = Camera2Interop.Extender(analysisBuilder)
         listOf(previewExt, analysisExt).forEach { ext ->
             ext.setCaptureRequestOption(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
             ext.setCaptureRequestOption(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_AUTO)
-        }
-
-        if (manualMode) {
-            onProfileFallback?.invoke("FPS-Prioritaet aktiv: Belichtung manuell ueber Slider")
         }
     }
 
@@ -315,11 +306,24 @@ class PrecorderEngine(private val context: Context) {
             manager.getCameraCharacteristics(cameraId)
         }.getOrNull() ?: return false
 
-        val manualMode = shouldUseManualSensorMode(settings.targetFps, chars)
-        if (manualMode) return true
+        val requireExact = settings.targetFps >= 120
+        val fpsRange = selectFpsRange(chars, settings.targetFps, requireExact = requireExact)
+        if (fpsRange == null) {
+            if (requireExact && unsupportedExactFpsNotified != settings.targetFps) {
+                unsupportedExactFpsNotified = settings.targetFps
+                val advertised = chars.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
+                    .orEmpty()
+                    .joinToString { "[${it.lower},${it.upper}]" }
+                onProfileFallback?.invoke(
+                    "Exaktes ${settings.targetFps} fps wird hier nicht angeboten. Verfuegbare AE-Ranges: $advertised"
+                )
+            }
+            return false
+        }
+        unsupportedExactFpsNotified = null
 
-        val fpsRange = selectFpsRange(chars, settings.targetFps) ?: return false
         val options = CaptureRequestOptions.Builder()
+            .setCaptureRequestOption(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
             .setCaptureRequestOption(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
             .setCaptureRequestOption(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, fpsRange)
             .build()
@@ -341,46 +345,10 @@ class PrecorderEngine(private val context: Context) {
         pendingExposureApply = !applyRuntimeExposureOverride(cam, settings)
     }
 
+    @Suppress("UNUSED_PARAMETER")
     private fun applyRuntimeExposureOverride(cam: Camera, settings: PrecorderSettings): Boolean {
-        val cameraId = runCatching { Camera2CameraInfo.from(cam.cameraInfo).cameraId }
-            .getOrElse { settings.cameraId }
-            ?: return false
-        val chars = runCatching {
-            val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
-            manager.getCameraCharacteristics(cameraId)
-        }.getOrNull() ?: return false
-        if (!shouldUseManualSensorMode(settings.targetFps, chars)) return true
-
-        val frameDurationNs = (1_000_000_000L / settings.targetFps.coerceAtLeast(1))
-        val exposureNs = (frameDurationNs * manualExposurePercent.coerceIn(20, 100) / 100L).coerceIn(500_000L, frameDurationNs)
-        val sensitivity = chooseIso(chars)
-
-        val options = CaptureRequestOptions.Builder()
-            .setCaptureRequestOption(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_OFF)
-            .setCaptureRequestOption(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
-            .setCaptureRequestOption(CaptureRequest.SENSOR_FRAME_DURATION, frameDurationNs)
-            .setCaptureRequestOption(CaptureRequest.SENSOR_EXPOSURE_TIME, exposureNs)
-            .setCaptureRequestOption(CaptureRequest.SENSOR_SENSITIVITY, sensitivity)
-            .setCaptureRequestOption(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
-            .build()
-
-        return runCatching {
-            Camera2CameraControl.from(cam.cameraControl).setCaptureRequestOptions(options)
-            true
-        }.getOrElse {
-            Log.w(TAG, "Exposure override deferred: ${it.message}")
-            false
-        }
-    }
-
-    private fun supportsManualSensor(chars: CameraCharacteristics): Boolean {
-        val caps = chars.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES) ?: intArrayOf()
-        return caps.contains(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_SENSOR)
-    }
-
-    private fun chooseIso(chars: CameraCharacteristics): Int {
-        val range = chars.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE) ?: return 800
-        return 800.coerceIn(range.lower, range.upper)
+        // Keep AE active so exposure can still auto-correct (especially overexposure) at high FPS.
+        return true
     }
 
     private fun ensureCodec(image: ImageProxy, settings: PrecorderSettings) {
