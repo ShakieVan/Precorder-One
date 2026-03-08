@@ -91,6 +91,7 @@ class PrecorderEngine(private val context: Context) {
     private var lastExposureApplyMs: Long = 0L
     private var pendingFpsApply: Boolean = true
     private var lastFpsApplyMs: Long = 0L
+    private var reusableYuvBuffer: ByteArray? = null
 
 
     fun getManualExposurePercent(): Int = manualExposurePercent
@@ -244,16 +245,23 @@ class PrecorderEngine(private val context: Context) {
             manager.getCameraCharacteristics(cameraId)
         }.getOrNull() ?: return
 
+        val manualMode = targetFps >= 60 && supportsManualSensor(chars)
+        val afMode = if (manualMode) {
+            CaptureRequest.CONTROL_AF_MODE_OFF
+        } else {
+            CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO
+        }
+
         val previewExt = Camera2Interop.Extender(previewBuilder)
         val analysisExt = Camera2Interop.Extender(analysisBuilder)
         listOf(previewExt, analysisExt).forEach { ext ->
-            ext.setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO)
+            ext.setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE, afMode)
             ext.setCaptureRequestOption(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
             ext.setCaptureRequestOption(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_AUTO)
         }
 
-        if (targetFps >= 60 && supportsManualSensor(chars)) {
-            onProfileFallback?.invoke("FPS-Priorität aktiv: Belichtung manuell über Slider")
+        if (manualMode) {
+            onProfileFallback?.invoke("FPS-Prioritaet aktiv: Belichtung manuell ueber Slider")
         }
     }
 
@@ -281,6 +289,7 @@ class PrecorderEngine(private val context: Context) {
         val options = CaptureRequestOptions.Builder()
             .setCaptureRequestOption(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
             .setCaptureRequestOption(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, fpsRange)
+            .setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO)
             .build()
 
         return runCatching {
@@ -516,6 +525,7 @@ class PrecorderEngine(private val context: Context) {
         formatReady = false
         formatWidth = 0
         formatHeight = 0
+        reusableYuvBuffer = null
         runCatching { codec?.stop() }
         runCatching { codec?.release() }
         codec = null
@@ -678,7 +688,12 @@ class PrecorderEngine(private val context: Context) {
 
         val ySize = image.width * image.height
         val uvSize = ySize / 2
-        val out = ByteArray(ySize + uvSize)
+        val requiredSize = ySize + uvSize
+        val out = if (reusableYuvBuffer?.size == requiredSize) {
+            reusableYuvBuffer!!
+        } else {
+            ByteArray(requiredSize).also { reusableYuvBuffer = it }
+        }
 
         copyPlane(yPlane.buffer, yPlane.rowStride, yPlane.pixelStride, image.width, image.height, out)
 
@@ -688,9 +703,11 @@ class PrecorderEngine(private val context: Context) {
         val uBuffer = uPlane.buffer
         val vBuffer = vPlane.buffer
         for (row in 0 until chromaHeight) {
+            val uRowOffset = row * uPlane.rowStride
+            val vRowOffset = row * vPlane.rowStride
             for (col in 0 until chromaWidth) {
-                val uIndex = row * uPlane.rowStride + col * uPlane.pixelStride
-                val vIndex = row * vPlane.rowStride + col * vPlane.pixelStride
+                val uIndex = uRowOffset + col * uPlane.pixelStride
+                val vIndex = vRowOffset + col * vPlane.pixelStride
                 out[offset++] = uBuffer.get(uIndex)
                 out[offset++] = vBuffer.get(vIndex)
             }
@@ -706,11 +723,22 @@ class PrecorderEngine(private val context: Context) {
         height: Int,
         out: ByteArray
     ) {
-        var offset = 0
+        var outOffset = 0
+        if (pixelStride == 1) {
+            val buffer = planeBuffer.duplicate()
+            for (row in 0 until height) {
+                buffer.position(row * rowStride)
+                buffer.get(out, outOffset, width)
+                outOffset += width
+            }
+            return
+        }
+
         for (row in 0 until height) {
+            val rowOffset = row * rowStride
             for (col in 0 until width) {
-                val index = row * rowStride + col * pixelStride
-                out[offset++] = planeBuffer.get(index)
+                val index = rowOffset + col * pixelStride
+                out[outOffset++] = planeBuffer.get(index)
             }
         }
     }
