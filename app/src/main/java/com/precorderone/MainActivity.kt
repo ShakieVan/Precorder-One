@@ -8,6 +8,8 @@ import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.OrientationEventListener
 import android.view.Surface
+import android.view.View
+import android.view.ViewConfiguration
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -19,10 +21,10 @@ import com.precorderone.data.PrecorderSettings
 import com.precorderone.data.SettingsRepository
 import com.precorderone.databinding.ActivityMainBinding
 import com.precorderone.ui.SettingsActivity
+import kotlin.math.abs
 
 @ExperimentalCamera2Interop
 class MainActivity : AppCompatActivity() {
-
     private lateinit var binding: ActivityMainBinding
     private lateinit var settingsRepository: SettingsRepository
     private lateinit var engine: PrecorderEngine
@@ -40,6 +42,12 @@ class MainActivity : AppCompatActivity() {
     private var exposurePercent = 55
     private var hasActiveBinding = false
     private var lastBoundSettings: PrecorderSettings? = null
+    private var touchStartX = 0f
+    private var touchStartY = 0f
+    private var touchMoved = false
+    private var touchSlopPx = 0
+    private var focusLocked = false
+    private var lastPipelineToast: String? = null
 
     private val permissionsLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -52,6 +60,7 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
+        touchSlopPx = ViewConfiguration.get(this).scaledTouchSlop
 
         settingsRepository = SettingsRepository(this)
         engine = PrecorderEngine(this)
@@ -78,6 +87,14 @@ class MainActivity : AppCompatActivity() {
         }
         engine.onProfileFallback = { msg ->
             runOnUiThread { Toast.makeText(this, msg, Toast.LENGTH_LONG).show() }
+        }
+        engine.onPipelineChanged = { msg ->
+            runOnUiThread {
+                if (msg != lastPipelineToast) {
+                    lastPipelineToast = msg
+                    Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+                }
+            }
         }
 
         exposurePercent = engine.getManualExposurePercent()
@@ -108,20 +125,24 @@ class MainActivity : AppCompatActivity() {
         }
 
         binding.btnTrigger.setOnClickListener { onTrigger() }
-        binding.btnSettings.setOnClickListener { startActivity(Intent(this, SettingsActivity::class.java)) }
-        binding.previewView.setOnTouchListener { _, event ->
-            if (event.actionMasked == MotionEvent.ACTION_UP) {
-                val focused = engine.focusAt(binding.previewView, event.x, event.y)
-                if (!focused) Toast.makeText(this, R.string.focus_failed, Toast.LENGTH_SHORT).show()
-                return@setOnTouchListener true
+        binding.btnFocusAuto.setOnClickListener {
+            val unlocked = engine.clearFocusLock()
+            if (!unlocked) {
+                Toast.makeText(this, R.string.focus_failed, Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
             }
-            event.actionMasked == MotionEvent.ACTION_DOWN
+            focusLocked = false
+            updateFocusUi()
         }
+        binding.btnSettings.setOnClickListener { startActivity(Intent(this, SettingsActivity::class.java)) }
+        binding.previewView.setOnTouchListener { _, event -> handlePreviewTouch(event, allowTapFocus = true, highSpeedPreview = false) }
+        binding.highSpeedPreviewView.setOnTouchListener { _, event -> handlePreviewTouch(event, allowTapFocus = true, highSpeedPreview = true) }
         binding.previewView.previewStreamState.observe(this) { state ->
             if (state == PreviewView.StreamState.STREAMING) {
                 engine.setManualExposurePercent(exposurePercent)
             }
         }
+        updateFocusUi()
 
         requestPermissionsIfNeeded()
     }
@@ -139,6 +160,8 @@ class MainActivity : AppCompatActivity() {
             engine.pauseSession()
             hasActiveBinding = false
         }
+        focusLocked = false
+        updateFocusUi()
     }
 
     private fun requestPermissionsIfNeeded() {
@@ -160,7 +183,61 @@ class MainActivity : AppCompatActivity() {
         bufferFill = 0f
         isSaving = false
         triggerArmed = false
+        focusLocked = false
+        updateFocusUi()
         updateBufferUi()
+    }
+
+    private fun handlePreviewTouch(
+        event: MotionEvent,
+        allowTapFocus: Boolean,
+        highSpeedPreview: Boolean
+    ): Boolean {
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                touchStartX = event.x
+                touchStartY = event.y
+                touchMoved = false
+                return true
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (abs(event.x - touchStartX) > touchSlopPx || abs(event.y - touchStartY) > touchSlopPx) {
+                    touchMoved = true
+                }
+                return true
+            }
+            MotionEvent.ACTION_UP -> {
+                if (allowTapFocus && !touchMoved) {
+                    val focused = if (highSpeedPreview && binding.highSpeedPreviewView.visibility == View.VISIBLE) {
+                        val width = binding.highSpeedPreviewView.width.coerceAtLeast(1)
+                        val height = binding.highSpeedPreviewView.height.coerceAtLeast(1)
+                        engine.focusAtHighSpeed(event.x / width.toFloat(), event.y / height.toFloat())
+                    } else if (!highSpeedPreview && binding.previewView.visibility == View.VISIBLE) {
+                        engine.focusAt(binding.previewView, event.x, event.y)
+                    } else {
+                        false
+                    }
+                    if (!focused) {
+                        Toast.makeText(this, R.string.focus_failed, Toast.LENGTH_SHORT).show()
+                    } else {
+                        focusLocked = true
+                    }
+                    updateFocusUi()
+                }
+                touchMoved = false
+                return true
+            }
+            MotionEvent.ACTION_CANCEL -> {
+                touchMoved = false
+                return true
+            }
+        }
+        return true
+    }
+
+    private fun updateFocusUi() {
+        val canShow = focusLocked && (binding.previewView.visibility == View.VISIBLE || binding.highSpeedPreviewView.visibility == View.VISIBLE)
+        binding.btnFocusAuto.visibility = if (canShow) View.VISIBLE else View.GONE
     }
 
     private fun onTrigger() {

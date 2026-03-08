@@ -57,22 +57,6 @@
         app:title="Kameralicht"
         app:defaultValue="false" />
 
-    <SeekBarPreference
-        app:key="digital_zoom"
-        app:title="Digitaler Zoom"
-        app:min="1"
-        android:max="8"
-        app:showSeekBarValue="true"
-        app:defaultValue="1" />
-
-    <SeekBarPreference
-        app:key="analog_zoom"
-        app:title="Analoger Zoom (falls verfügbar)"
-        app:min="1"
-        android:max="4"
-        app:showSeekBarValue="true"
-        app:defaultValue="1" />
-
     <SwitchPreferenceCompat
         app:key="volume_trigger"
         app:title="Vol-Down als Trigger"

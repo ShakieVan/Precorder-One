@@ -11,8 +11,8 @@ android {
         applicationId = "com.precorderone"
         minSdk = 28
         targetSdk = 34
-        versionCode = 2
-        versionName = "1.0-RC2"
+        versionCode = 3
+        versionName = "1.0-RC3"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {

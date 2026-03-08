@@ -17,8 +17,6 @@ class SettingsRepository(context: Context) {
             ?: CameraSelector.LENS_FACING_BACK,
         cameraId = prefs.getString(KEY_CAMERA_ID, null),
         torchEnabled = prefs.getBoolean(KEY_TORCH, false),
-        digitalZoomRatio = prefs.getInt(KEY_DIGITAL_ZOOM, 1).toFloat().coerceAtLeast(1f),
-        analogZoomRatio = prefs.getInt(KEY_ANALOG_ZOOM, 1).toFloat().coerceAtLeast(1f),
         triggerWithVolumeDown = prefs.getBoolean(KEY_VOLUME_TRIGGER, true),
         aspectRatio = prefs.getString(KEY_ASPECT_RATIO, "16:9") ?: "16:9"
     )
@@ -32,8 +30,6 @@ class SettingsRepository(context: Context) {
             .putString(KEY_LENS_FACING, if (settings.lensFacing == CameraSelector.LENS_FACING_FRONT) "front" else "back")
             .putString(KEY_CAMERA_ID, settings.cameraId)
             .putBoolean(KEY_TORCH, settings.torchEnabled)
-            .putInt(KEY_DIGITAL_ZOOM, settings.digitalZoomRatio.toInt())
-            .putInt(KEY_ANALOG_ZOOM, settings.analogZoomRatio.toInt())
             .putBoolean(KEY_VOLUME_TRIGGER, settings.triggerWithVolumeDown)
             .putString(KEY_ASPECT_RATIO, settings.aspectRatio)
             .apply()
@@ -47,8 +43,6 @@ class SettingsRepository(context: Context) {
         const val KEY_LENS_FACING = "lens_facing"
         const val KEY_CAMERA_ID = "camera_id"
         const val KEY_TORCH = "torch"
-        const val KEY_DIGITAL_ZOOM = "digital_zoom"
-        const val KEY_ANALOG_ZOOM = "analog_zoom"
         const val KEY_VOLUME_TRIGGER = "volume_trigger"
         const val KEY_ASPECT_RATIO = "aspect_ratio"
     }

@@ -3,11 +3,11 @@ package com.precorderone.camera
 import android.content.Context
 import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraCharacteristics
-import android.hardware.camera2.CameraConstrainedHighSpeedCaptureSession
 import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CaptureRequest
 import android.hardware.camera2.params.MeteringRectangle
+import android.media.MediaRecorder
 import android.os.Handler
 import android.os.HandlerThread
 import android.util.Range
@@ -17,7 +17,7 @@ import android.view.SurfaceHolder
 import android.view.SurfaceView
 import kotlin.math.abs
 
-internal class HighSpeedCamera2Session(
+internal class Camera2RecordSession(
     private val context: Context,
     private val onError: (String, Throwable?) -> Unit
 ) {
@@ -77,10 +77,9 @@ internal class HighSpeedCamera2Session(
     fun updateControls(torch: Boolean) {
         torchEnabled = torch
         val session = captureSession ?: return
-        runCatching {
-            session.stopRepeating()
-            startBurst(session)
-        }
+        val handler = cameraHandler ?: return
+        val request = buildRequest(afTriggerStart = false) ?: return
+        runCatching { session.setRepeatingRequest(request, null, handler) }
     }
 
     fun focusAt(normX: Float, normY: Float): Boolean {
@@ -89,13 +88,11 @@ internal class HighSpeedCamera2Session(
         focusLockEnabled = true
         val session = captureSession ?: return false
         val handler = cameraHandler ?: return false
-        val hsSession = session as? CameraConstrainedHighSpeedCaptureSession ?: return false
         val trigger = buildRequest(afTriggerStart = true) ?: return false
         return runCatching {
-            val burst = hsSession.createHighSpeedRequestList(trigger)
-            session.captureBurst(burst, null, handler)
-            session.stopRepeating()
-            startBurst(session)
+            session.capture(trigger, null, handler)
+            val repeating = buildRequest(afTriggerStart = false) ?: return@runCatching false
+            session.setRepeatingRequest(repeating, null, handler)
             true
         }.getOrDefault(false)
     }
@@ -103,9 +100,10 @@ internal class HighSpeedCamera2Session(
     fun clearFocusLock(): Boolean {
         focusLockEnabled = false
         val session = captureSession ?: return false
+        val handler = cameraHandler ?: return false
+        val request = buildRequest(afTriggerStart = false) ?: return false
         return runCatching {
-            session.stopRepeating()
-            startBurst(session)
+            session.setRepeatingRequest(request, null, handler)
             true
         }.getOrDefault(false)
     }
@@ -137,7 +135,7 @@ internal class HighSpeedCamera2Session(
 
     private fun ensureCameraThread() {
         if (cameraThread != null) return
-        val thread = HandlerThread("precorder-hs-camera2").apply { start() }
+        val thread = HandlerThread("precorder-camera2").apply { start() }
         cameraThread = thread
         cameraHandler = Handler(thread.looper)
     }
@@ -158,16 +156,16 @@ internal class HighSpeedCamera2Session(
                 override fun onDisconnected(camera: CameraDevice) {
                     camera.close()
                     cameraDevice = null
-                    if (running) onError("High-Speed-Kamera getrennt", null)
+                    if (running) onError("Camera2 getrennt", null)
                 }
 
                 override fun onError(camera: CameraDevice, error: Int) {
                     camera.close()
                     cameraDevice = null
-                    if (running) onError("High-Speed-Kamerafehler: $error", null)
+                    if (running) onError("Camera2-Fehler: $error", null)
                 }
             }, handler)
-        }.onFailure { onError("Kamera konnte nicht geoeffnet werden", it) }
+        }.onFailure { onError("Camera2 konnte nicht geoeffnet werden", it) }
     }
 
     private fun createSession(previewView: SurfaceView, camera: CameraDevice) {
@@ -181,31 +179,22 @@ internal class HighSpeedCamera2Session(
         previewSurface = surface
 
         runCatching {
-            camera.createConstrainedHighSpeedCaptureSession(
+            camera.createCaptureSession(
                 listOf(surface, encoderSurface),
                 object : CameraCaptureSession.StateCallback() {
                     override fun onConfigured(session: CameraCaptureSession) {
                         captureSession = session
-                        startBurst(session)
+                        val request = buildRequest(afTriggerStart = false) ?: return
+                        session.setRepeatingRequest(request, null, handler)
                     }
 
                     override fun onConfigureFailed(session: CameraCaptureSession) {
-                        if (running) onError("High-Speed-Session konnte nicht konfiguriert werden", null)
+                        if (running) onError("Camera2-Session konnte nicht konfiguriert werden", null)
                     }
                 },
                 handler
             )
-        }.onFailure { onError("High-Speed-Session Start fehlgeschlagen", it) }
-    }
-
-    private fun startBurst(session: CameraCaptureSession) {
-        val handler = cameraHandler ?: return
-        val hsSession = session as? CameraConstrainedHighSpeedCaptureSession ?: return
-
-        val request = buildRequest(afTriggerStart = false) ?: return
-
-        val burst = hsSession.createHighSpeedRequestList(request)
-        session.setRepeatingBurst(burst, null, handler)
+        }.onFailure { onError("Camera2-Session Start fehlgeschlagen", it) }
     }
 
     private fun buildRequest(afTriggerStart: Boolean): CaptureRequest? {
@@ -264,22 +253,37 @@ internal class HighSpeedCamera2Session(
             } ?: return null
 
             val chars = runCatching { manager.getCameraCharacteristics(cameraId) }.getOrNull() ?: return null
-            val caps = chars.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES) ?: intArrayOf()
-            if (!caps.contains(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_CONSTRAINED_HIGH_SPEED_VIDEO)) return null
             val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: return null
-            val ranges = map.highSpeedVideoFpsRanges.filter { targetFps in it.lower..it.upper }
-            if (ranges.isEmpty()) return null
-            val chosenRange = ranges.firstOrNull { it.lower == targetFps && it.upper == targetFps }
-                ?: ranges.minByOrNull { abs(it.upper - targetFps) + abs(it.lower - targetFps) }
-                ?: return null
-            val sizes = map.getHighSpeedVideoSizesFor(chosenRange)
+            val sizes = map.getOutputSizes(MediaRecorder::class.java)?.toList().orEmpty()
             if (sizes.isEmpty()) return null
+
+            val fpsRanges = chars.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES).orEmpty()
+            if (fpsRanges.isEmpty()) return null
+            val chosenRange = fpsRanges.firstOrNull { it.lower == targetFps && it.upper == targetFps }
+                ?: fpsRanges.filter { targetFps in it.lower..it.upper }.minByOrNull { abs(it.upper - targetFps) + abs(it.lower - targetFps) }
+                ?: fpsRanges.maxByOrNull { it.upper }
+                ?: return null
+
             val targetRatio = if (aspect == "4:3") 4f / 3f else 16f / 9f
-            val chosenSize = sizes.sortedWith(
+            val frameDurationBudgetNs = 1_000_000_000L / targetFps.coerceAtLeast(1)
+
+            // Prefer sizes that can realistically sustain target fps according to camera metadata.
+            val fpsSafeSizes = sizes.filter { size ->
+                val minDuration = runCatching {
+                    map.getOutputMinFrameDuration(MediaRecorder::class.java, size)
+                }.getOrDefault(0L)
+                minDuration <= 0L || minDuration <= frameDurationBudgetNs
+            }
+
+            val candidateSizes = if (fpsSafeSizes.isNotEmpty()) fpsSafeSizes else sizes
+            val chosenSize = candidateSizes.sortedWith(
                 compareBy<Size> {
                     val ratio = it.width.toFloat() / it.height.toFloat()
                     abs(ratio - targetRatio)
-                }.thenByDescending { it.width * it.height }
+                }.thenBy { size ->
+                    // For high fps, prioritize smaller resolutions first to reduce ISP/encoder pressure.
+                    if (targetFps >= 60) size.width * size.height else -(size.width * size.height)
+                }
             ).first()
             return Profile(cameraId, chars, chosenSize, chosenRange)
         }

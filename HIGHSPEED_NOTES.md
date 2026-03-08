@@ -15,16 +15,28 @@ Stand: 2026-03-08
 
 - High-Speed laeuft ueber `Camera2` constrained high-speed session (nicht ueber CameraX).
 - Bei `targetFps >= 120` wird auf `HighSpeedCamera2Session` umgeschaltet.
+- Bei `targetFps < 120` laeuft der Standardpfad ebenfalls ueber Camera2 Surface-to-Surface (`Camera2RecordSession`), um CPU-Last durch YUV-Kopien zu vermeiden.
 - High-Speed-Preview nutzt `SurfaceView` (nicht `TextureView`) und setzt feste Groesse auf Profilgroesse.
 - Encoder nutzt im High-Speed-Pfad eine `MediaCodec`-Input-Surface.
 
 Betroffene Dateien:
 
 - `app/src/main/java/com/precorderone/camera/HighSpeedCamera2Session.kt`
+- `app/src/main/java/com/precorderone/camera/Camera2RecordSession.kt`
 - `app/src/main/java/com/precorderone/camera/PrecorderEngine.kt`
 - `app/src/main/java/com/precorderone/ui/SettingsFragment.kt`
 - `app/src/main/java/com/precorderone/MainActivity.kt`
 - `app/src/main/res/layout/activity_main.xml`
+
+## Guardrail gegen Regressions (verbindlich)
+
+- Der Live-Capture-Pfad bleibt Surface-basiert (Camera2 -> Encoder-Surface), ohne CPU-YUV-Kopie pro Frame.
+- `ImageAnalysis` darf nur im Fallback-Pfad aktiv sein.
+- Kamera-IDs werden nicht pauschal ausgefiltert; explizit gewaehlte Kamera-ID hat Vorrang.
+- Aenderungen an Aufnahme/Preview muessen vor Merge pruefen:
+  - 30/60/120 fps stabil
+  - Fokus setzen/zuruecksetzen funktioniert
+  - Trigger-Save funktioniert
 
 ## Bereits gefixter Fehler (wichtig)
 
@@ -118,9 +130,29 @@ Implementiert:
 - Auch variable Ranges (z. B. `30..120`) werden weiterhin angeboten, wenn das Geraet sie meldet.
 - Hinweis fuer QA: "angebotene FPS" bedeutet nicht immer "stabil gelieferte FPS" auf jeder Kamera-ID.
 
+## Update RC3: Multi-Kamera Stabilitaet
+
+Implementiert:
+
+- Camera2-Normalpfad auf mehrere Kamera-IDs erweitert (keine pauschale Ausgrenzung).
+- Explizit gewaehlte Kamera-ID wird beim Binding priorisiert.
+- Pro Kamera wird eine fps-sichere Aufnahmegroesse bevorzugt (basierend auf `getOutputMinFrameDuration`), besonders fuer 60fps+.
+- Pipeline-Meldung als Toast + Log (`CAMERA2_NORMAL`, `CAMERA2_HIGHSPEED`, `CAMERAX_FALLBACK`) zur schnellen Diagnose pro Kamera.
+
+Ziel:
+
+- Stabilere FPS auch auf Sekundaer-/Tele-/Ultraweit-Kameras, ohne Rueckfall auf CPU-intensive Pfade.
+
 Grund:
 
 - Die App soll keine Herstellercapabilities verstecken; Qualitaets-/Stabilitaetsgrenzen einzelner Linsen sind dann ein Geraeteverhalten.
+
+## Wichtige Guardrail: Features und FPS (verbindlich)
+
+- Der Aufnahme-/Encode-Pfad darf nicht verlangsamt werden.
+- Zoom-Feature wurde aus Performancegruenden vorerst komplett entfernt.
+- Keine Kamera-Crop-/Zoom-Operationen im laufenden Capture-Loop.
+- Falls Zoom spaeter zurueckkommt: nur mit klarer FPS-Absicherung und standardmaessig aus.
 
 ## Releasekandidat
 

@@ -8,8 +8,6 @@ data class PrecorderSettings(
     val lensFacing: Int = androidx.camera.core.CameraSelector.LENS_FACING_BACK,
     val cameraId: String? = null,
     val torchEnabled: Boolean = false,
-    val digitalZoomRatio: Float = 1f,
-    val analogZoomRatio: Float = 1f,
     val triggerWithVolumeDown: Boolean = true,
     val aspectRatio: String = "16:9"
 )

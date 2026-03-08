@@ -14,4 +14,5 @@
     <string name="debug_fps">Src: %1$.1f | Q: %2$.1f | Enc: %3$.1f | Drop: %4$.0f%% | Ziel: %5$d</string>
     <string name="exposure_initial">Belichtung: --%</string>
     <string name="exposure_label">Belichtung: %1$d%%</string>
+    <string name="focus_auto_button">Autofokus wieder aktivieren</string>
 </resources>

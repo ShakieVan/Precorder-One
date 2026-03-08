@@ -75,10 +75,7 @@ class SettingsFragment : PreferenceFragmentCompat() {
 
         fun refreshCameraEntries() {
             val desiredLens = selectedLensFacing()
-            val ids = manager.cameraIdList.filter { id ->
-                val chars = manager.getCameraCharacteristics(id)
-                chars.get(CameraCharacteristics.LENS_FACING) == desiredLens
-            }
+            val ids = manager.cameraIdList.toList()
 
             val labels = ids.mapIndexed { index, id ->
                 val chars = manager.getCameraCharacteristics(id)
@@ -86,7 +83,12 @@ class SettingsFragment : PreferenceFragmentCompat() {
                 val focalLabel = focal?.let { String.format("%.1fmm", it) } ?: "?mm"
                 val appMaxFps = collectAppSupportedFps(chars).maxOrNull() ?: 30
                 val highSpeedMaxFps = collectHighSpeedFps(chars).maxOrNull()
-                val lensName = if (desiredLens == CameraCharacteristics.LENS_FACING_FRONT) "Front" else "Back"
+                val lensName = when (chars.get(CameraCharacteristics.LENS_FACING)) {
+                    CameraCharacteristics.LENS_FACING_FRONT -> "Front"
+                    CameraCharacteristics.LENS_FACING_BACK -> "Back"
+                    CameraCharacteristics.LENS_FACING_EXTERNAL -> "External"
+                    else -> "Unknown"
+                }
                 val hsLabel = highSpeedMaxFps?.let { ", HS bis $it fps" } ?: ""
                 "$lensName ${index + 1} (ID $id, $focalLabel, App bis $appMaxFps fps$hsLabel)"
             }
@@ -98,7 +100,11 @@ class SettingsFragment : PreferenceFragmentCompat() {
                 return
             }
             if (cameraPref.value !in ids) {
-                cameraPref.value = ids.first()
+                val preferredByLens = ids.firstOrNull { id ->
+                    val chars = manager.getCameraCharacteristics(id)
+                    chars.get(CameraCharacteristics.LENS_FACING) == desiredLens
+                }
+                cameraPref.value = preferredByLens ?: ids.first()
             }
             cameraPref.summaryProvider = ListPreference.SimpleSummaryProvider.getInstance()
             updateFpsOptions(cameraPref.value)
@@ -122,6 +128,16 @@ class SettingsFragment : PreferenceFragmentCompat() {
 
         lensPref?.setOnPreferenceChangeListener { _, _ ->
             refreshCameraEntries()
+            val ids = manager.cameraIdList.toList()
+            val desiredLens = selectedLensFacing()
+            val byLens = ids.firstOrNull { id ->
+                val chars = manager.getCameraCharacteristics(id)
+                chars.get(CameraCharacteristics.LENS_FACING) == desiredLens
+            }
+            if (byLens != null) {
+                cameraPref.value = byLens
+                updateFpsOptions(byLens)
+            }
             true
         }
 
