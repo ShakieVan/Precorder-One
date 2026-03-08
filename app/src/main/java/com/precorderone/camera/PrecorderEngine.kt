@@ -94,6 +94,7 @@ class PrecorderEngine(private val context: Context) {
     private var lastFpsApplyMs: Long = 0L
     private var reusableYuvBuffer: ByteArray? = null
     private val codecLock = Any()
+    private var manualSensorModeActive: Boolean = false
 
 
     fun getManualExposurePercent(): Int = manualExposurePercent
@@ -145,6 +146,7 @@ class PrecorderEngine(private val context: Context) {
     }
 
     fun focusAt(previewView: PreviewView, x: Float, y: Float): Boolean {
+        if (manualSensorModeActive) return false
         val cam = camera ?: return false
         val point = previewView.meteringPointFactory.createPoint(x, y)
         val action = FocusMeteringAction.Builder(
@@ -265,16 +267,14 @@ class PrecorderEngine(private val context: Context) {
         }.getOrNull() ?: return
 
         val manualMode = shouldUseManualSensorMode(targetFps, chars)
-        val afMode = if (manualMode) {
-            CaptureRequest.CONTROL_AF_MODE_OFF
-        } else {
-            CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO
-        }
+        manualSensorModeActive = manualMode
 
         val previewExt = Camera2Interop.Extender(previewBuilder)
         val analysisExt = Camera2Interop.Extender(analysisBuilder)
         listOf(previewExt, analysisExt).forEach { ext ->
-            ext.setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE, afMode)
+            if (!manualMode) {
+                ext.setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO)
+            }
             ext.setCaptureRequestOption(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
             ext.setCaptureRequestOption(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_AUTO)
         }
@@ -345,7 +345,6 @@ class PrecorderEngine(private val context: Context) {
         val options = CaptureRequestOptions.Builder()
             .setCaptureRequestOption(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_OFF)
             .setCaptureRequestOption(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
-            .setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
             .setCaptureRequestOption(CaptureRequest.SENSOR_FRAME_DURATION, frameDurationNs)
             .setCaptureRequestOption(CaptureRequest.SENSOR_EXPOSURE_TIME, exposureNs)
             .setCaptureRequestOption(CaptureRequest.SENSOR_SENSITIVITY, sensitivity)
@@ -556,6 +555,7 @@ class PrecorderEngine(private val context: Context) {
             encodedFps = 0f
             pendingExposureApply = true
             pendingFpsApply = true
+            manualSensorModeActive = false
             formatReady = false
             formatWidth = 0
             formatHeight = 0
