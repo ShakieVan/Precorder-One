@@ -94,6 +94,7 @@ class PrecorderEngine(private val context: Context) {
     private var lastFpsApplyMs: Long = 0L
     private var reusableYuvBuffer: ByteArray? = null
     private val codecLock = Any()
+    private val bufferLock = Any()
     private var manualSensorModeActive: Boolean = false
 
 
@@ -125,10 +126,14 @@ class PrecorderEngine(private val context: Context) {
             currentConfigKey = key
         } else {
             // Bei erneutem Binden trotzdem Puffer leeren, damit nur konsistente Frames enthalten sind.
-            ringBuffer.clear()
+            synchronized(bufferLock) {
+                ringBuffer.clear()
+            }
             notifyBufferProgress(0f)
         }
-        ringBuffer = EncodedFrameRingBuffer(retentionUs)
+        synchronized(bufferLock) {
+            ringBuffer = EncodedFrameRingBuffer(retentionUs)
+        }
 
         val providerFuture = ProcessCameraProvider.getInstance(context)
         providerFuture.addListener({
@@ -213,8 +218,8 @@ class PrecorderEngine(private val context: Context) {
     @Suppress("DEPRECATION")
     private fun Preview.Builder.applyAspect(aspect: String): Preview.Builder {
         when (aspect) {
-            "4:3" -> setTargetResolution(if (forceLowProfile) Size(640, 480) else Size(1280, 960))
-            else -> setTargetResolution(if (forceLowProfile) Size(640, 360) else Size(1280, 720))
+            "4:3" -> setTargetResolution(if (forceLowProfile) Size(480, 360) else Size(640, 480))
+            else -> setTargetResolution(if (forceLowProfile) Size(640, 360) else Size(854, 480))
         }
         return this
     }
@@ -222,8 +227,8 @@ class PrecorderEngine(private val context: Context) {
     @Suppress("DEPRECATION")
     private fun ImageAnalysis.Builder.applyAspect(aspect: String): ImageAnalysis.Builder {
         when (aspect) {
-            "4:3" -> setTargetResolution(if (forceLowProfile) Size(640, 480) else Size(1280, 960))
-            else -> setTargetResolution(if (forceLowProfile) Size(640, 360) else Size(1280, 720))
+            "4:3" -> setTargetResolution(if (forceLowProfile) Size(480, 360) else Size(640, 480))
+            else -> setTargetResolution(if (forceLowProfile) Size(640, 360) else Size(854, 480))
         }
         return this
     }
@@ -376,7 +381,9 @@ class PrecorderEngine(private val context: Context) {
             runCatching { codec?.stop() }
             runCatching { codec?.release() }
             codec = null
-            ringBuffer = EncodedFrameRingBuffer(retentionUs)
+            synchronized(bufferLock) {
+                ringBuffer = EncodedFrameRingBuffer(retentionUs)
+            }
             notifyBufferProgress(0f)
         }
 
@@ -443,14 +450,16 @@ class PrecorderEngine(private val context: Context) {
                         buffer.position(info.offset)
                         buffer.limit(info.offset + info.size)
                         buffer.get(bytes)
-                        ringBuffer.append(
-                            EncodedFrame(
-                                data = bytes,
-                                presentationTimeUs = info.presentationTimeUs,
-                                flags = info.flags,
-                                isConfig = (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0
+                        synchronized(bufferLock) {
+                            ringBuffer.append(
+                                EncodedFrame(
+                                    data = bytes,
+                                    presentationTimeUs = info.presentationTimeUs,
+                                    flags = info.flags,
+                                    isConfig = (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0
+                                )
                             )
-                        )
+                        }
                         notifyBufferProgress(getBufferFillRatio())
                         updateEncodedStats(info.presentationTimeUs)
                     }
@@ -466,7 +475,15 @@ class PrecorderEngine(private val context: Context) {
 
     fun exportClip(settings: PrecorderSettings, deviceSurfaceRotation: Int, onDone: (Uri?) -> Unit) {
         ioScope.launch {
-            val allFrames = ringBuffer.snapshot().filterNot { it.isConfig }
+            // 2-buffer approach: swap out the active ring in O(1), continue recording immediately.
+            val exportBuffer = synchronized(bufferLock) {
+                val frozen = ringBuffer
+                ringBuffer = EncodedFrameRingBuffer(retentionUs)
+                frozen
+            }
+            notifyBufferProgress(0f)
+
+            val allFrames = exportBuffer.snapshot().filterNot { it.isConfig }
             val format = encoderOutputFormat
             if (allFrames.size < 8 || format == null) {
                 onDone(null)
@@ -531,7 +548,9 @@ class PrecorderEngine(private val context: Context) {
 
     private fun resetEncodingState() {
         synchronized(codecLock) {
-            ringBuffer.clear()
+            synchronized(bufferLock) {
+                ringBuffer.clear()
+            }
             notifyBufferProgress(0f)
             encoderOutputFormat = null
             lastSamplePtsUs = -1L
