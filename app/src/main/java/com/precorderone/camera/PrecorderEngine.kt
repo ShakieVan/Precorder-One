@@ -186,13 +186,6 @@ class PrecorderEngine(private val context: Context) {
             .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_YUV_420_888)
             .applyAspect(settings.aspectRatio)
 
-        selectFpsRange(settings.cameraId, settings.targetFps)?.let { fpsRange ->
-            Camera2Interop.Extender(previewBuilder)
-                .setCaptureRequestOption(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, fpsRange)
-            Camera2Interop.Extender(analysisBuilder)
-                .setCaptureRequestOption(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, fpsRange)
-        }
-
         applyFrameRatePriorityControls(settings, previewBuilder, analysisBuilder)
 
         val preview = previewBuilder.build().also {
@@ -274,9 +267,6 @@ class PrecorderEngine(private val context: Context) {
         val previewExt = Camera2Interop.Extender(previewBuilder)
         val analysisExt = Camera2Interop.Extender(analysisBuilder)
         listOf(previewExt, analysisExt).forEach { ext ->
-            if (!manualMode) {
-                ext.setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO)
-            }
             ext.setCaptureRequestOption(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
             ext.setCaptureRequestOption(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_AUTO)
         }
