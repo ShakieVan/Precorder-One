@@ -11,6 +11,7 @@ import android.view.Surface
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.camera.camera2.interop.ExperimentalCamera2Interop
 import androidx.core.content.ContextCompat
 import androidx.camera.view.PreviewView
 import com.precorderone.camera.PrecorderEngine
@@ -19,6 +20,7 @@ import com.precorderone.data.SettingsRepository
 import com.precorderone.databinding.ActivityMainBinding
 import com.precorderone.ui.SettingsActivity
 
+@ExperimentalCamera2Interop
 class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
@@ -151,7 +153,7 @@ class MainActivity : AppCompatActivity() {
         if (hasActiveBinding && settings == lastBoundSettings) {
             return
         }
-        engine.bind(this, binding.previewView, settings)
+        engine.bind(this, binding.previewView, binding.highSpeedPreviewView, settings)
         hasActiveBinding = true
         lastBoundSettings = settings
         isRecordingLoop = true

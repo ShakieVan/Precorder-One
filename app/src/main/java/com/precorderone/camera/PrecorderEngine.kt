@@ -16,6 +16,8 @@ import android.util.Log
 import android.util.Range
 import android.util.Size
 import android.view.Surface
+import android.view.SurfaceView
+import android.view.View
 import androidx.camera.camera2.interop.Camera2CameraControl
 import androidx.camera.camera2.interop.Camera2CameraInfo
 import androidx.camera.camera2.interop.Camera2Interop
@@ -46,10 +48,16 @@ import kotlin.math.abs
 
 @ExperimentalCamera2Interop
 class PrecorderEngine(private val context: Context) {
+    private enum class CapturePipeline { CAMERAX, CAMERA2_HIGHSPEED }
+
+    private var activePipeline: CapturePipeline = CapturePipeline.CAMERAX
     private var camera: Camera? = null
     private var cameraProvider: ProcessCameraProvider? = null
     private var analysis: ImageAnalysis? = null
+    private var highSpeedSession: HighSpeedCamera2Session? = null
     private var codec: MediaCodec? = null
+    private var codecInputSurface: Surface? = null
+    private var codecUsesSurfaceInput = false
     private var encoderOutputFormat: MediaFormat? = null
     private var ringBuffer: EncodedFrameRingBuffer = EncodedFrameRingBuffer(5_000_000)
     private val analyzerExecutor: ExecutorService = Executors.newSingleThreadExecutor()
@@ -87,6 +95,7 @@ class PrecorderEngine(private val context: Context) {
     private var forceLowProfile = false
     private var boundOwner: LifecycleOwner? = null
     private var boundPreviewView: PreviewView? = null
+    private var boundHighSpeedPreviewView: SurfaceView? = null
     private var boundSettings: PrecorderSettings? = null
     private var manualExposurePercent: Int = 55
     private var pendingExposureApply: Boolean = true
@@ -98,6 +107,9 @@ class PrecorderEngine(private val context: Context) {
     private val bufferLock = Any()
     private var manualSensorModeActive: Boolean = false
     private var unsupportedExactFpsNotified: Int? = null
+    private var highSpeedDrainActive = false
+    private var requestedTorchEnabled = false
+    private var requestedDigitalZoom = 1f
 
 
     fun getManualExposurePercent(): Int = manualExposurePercent
@@ -110,13 +122,16 @@ class PrecorderEngine(private val context: Context) {
         maybeApplyRuntimeExposureOverride(cam, settings)
     }
 
-    fun bind(owner: LifecycleOwner, previewView: PreviewView, settings: PrecorderSettings) {
+    fun bind(owner: LifecycleOwner, previewView: PreviewView, highSpeedPreviewView: SurfaceView, settings: PrecorderSettings) {
         boundOwner = owner
         boundPreviewView = previewView
+        boundHighSpeedPreviewView = highSpeedPreviewView
         boundSettings = settings
         pendingExposureApply = true
         pendingFpsApply = true
         unsupportedExactFpsNotified = null
+        requestedTorchEnabled = settings.torchEnabled
+        requestedDigitalZoom = settings.digitalZoomRatio
         bindStartMs = System.currentTimeMillis()
         fallbackApplied = false
         // High-FPS profile: keep analysis resolution low to reduce pipeline pressure.
@@ -139,19 +154,51 @@ class PrecorderEngine(private val context: Context) {
             ringBuffer = EncodedFrameRingBuffer(retentionUs)
         }
 
+        if (settings.targetFps >= 120) {
+            val profile = HighSpeedCamera2Session.chooseProfile(
+                context = context,
+                targetFps = settings.targetFps,
+                lensFacing = settings.lensFacing,
+                preferredCameraId = settings.cameraId,
+                aspect = settings.aspectRatio
+            )
+            if (profile != null) {
+                activePipeline = CapturePipeline.CAMERA2_HIGHSPEED
+                manualSensorModeActive = true
+                bindHighSpeed(profile, previewView, highSpeedPreviewView, settings)
+                return
+            }
+            onProfileFallback?.invoke("Kein echter Camera2 High-Speed-Pfad fuer ${settings.targetFps} fps verfuegbar. Fallback auf CameraX.")
+        }
+
+        activePipeline = CapturePipeline.CAMERAX
+        manualSensorModeActive = false
+        stopHighSpeedSession()
         val providerFuture = ProcessCameraProvider.getInstance(context)
         providerFuture.addListener({
             cameraProvider = providerFuture.get()
+            highSpeedPreviewView.visibility = View.GONE
+            previewView.visibility = View.VISIBLE
             bindInternal(owner, previewView, settings)
         }, ContextCompat.getMainExecutor(context))
     }
 
     fun toggleTorch(enabled: Boolean) {
+        requestedTorchEnabled = enabled
+        if (activePipeline == CapturePipeline.CAMERA2_HIGHSPEED) {
+            highSpeedSession?.updateControls(requestedTorchEnabled, requestedDigitalZoom)
+            return
+        }
         camera?.cameraControl?.enableTorch(enabled)
     }
 
     fun applyZoom(digitalZoom: Float) {
-        camera?.cameraControl?.setZoomRatio(digitalZoom)
+        requestedDigitalZoom = digitalZoom.coerceAtLeast(1f)
+        if (activePipeline == CapturePipeline.CAMERA2_HIGHSPEED) {
+            highSpeedSession?.updateControls(requestedTorchEnabled, requestedDigitalZoom)
+            return
+        }
+        camera?.cameraControl?.setZoomRatio(requestedDigitalZoom)
     }
 
     fun focusAt(previewView: PreviewView, x: Float, y: Float): Boolean {
@@ -217,6 +264,85 @@ class PrecorderEngine(private val context: Context) {
         }
         toggleTorch(settings.torchEnabled)
         applyZoom(settings.digitalZoomRatio)
+    }
+
+    private fun bindHighSpeed(
+        profile: HighSpeedCamera2Session.Profile,
+        previewView: PreviewView,
+        highSpeedPreviewView: SurfaceView,
+        settings: PrecorderSettings
+    ) {
+        runCatching { cameraProvider?.unbindAll() }
+        analysis?.clearAnalyzer()
+        analysis = null
+        camera = null
+
+        previewView.visibility = View.GONE
+        highSpeedPreviewView.visibility = View.VISIBLE
+
+        synchronized(codecLock) {
+            ensureCodec(profile.size.width, profile.size.height, settings, useSurfaceInput = true)
+        }
+        val inputSurface = codecInputSurface
+        if (inputSurface == null) {
+            onProfileFallback?.invoke("High-Speed Encoder Surface konnte nicht erstellt werden. Fallback auf CameraX.")
+            fallbackToCameraX(settings)
+            return
+        }
+
+        stopHighSpeedSession()
+        val session = highSpeedSession ?: HighSpeedCamera2Session(
+            context = context,
+            onError = { message, throwable ->
+                Log.e(TAG, message, throwable)
+                onProfileFallback?.invoke("$message Fallback auf CameraX.")
+                fallbackToCameraX(settings)
+            }
+        ).also { highSpeedSession = it }
+        session.start(
+            profile = profile,
+            previewView = highSpeedPreviewView,
+            encoderSurface = inputSurface,
+            torch = requestedTorchEnabled,
+            zoom = requestedDigitalZoom
+        )
+        startHighSpeedDrainLoop()
+    }
+
+    private fun fallbackToCameraX(settings: PrecorderSettings) {
+        stopHighSpeedSession()
+        activePipeline = CapturePipeline.CAMERAX
+        manualSensorModeActive = false
+        val owner = boundOwner ?: return
+        val preview = boundPreviewView ?: return
+        val hsPreview = boundHighSpeedPreviewView ?: return
+        ContextCompat.getMainExecutor(context).execute {
+            hsPreview.visibility = View.GONE
+            preview.visibility = View.VISIBLE
+            val providerFuture = ProcessCameraProvider.getInstance(context)
+            providerFuture.addListener({
+                cameraProvider = providerFuture.get()
+                bindInternal(owner, preview, settings)
+            }, ContextCompat.getMainExecutor(context))
+        }
+    }
+
+    private fun startHighSpeedDrainLoop() {
+        if (highSpeedDrainActive) return
+        highSpeedDrainActive = true
+        analyzerExecutor.execute {
+            while (highSpeedDrainActive) {
+                synchronized(codecLock) {
+                    codec?.let { drainCodec(it) }
+                }
+                Thread.sleep(2)
+            }
+        }
+    }
+
+    private fun stopHighSpeedSession() {
+        highSpeedDrainActive = false
+        runCatching { highSpeedSession?.stop() }
     }
 
     @Suppress("DEPRECATION")
@@ -351,11 +477,9 @@ class PrecorderEngine(private val context: Context) {
         return true
     }
 
-    private fun ensureCodec(image: ImageProxy, settings: PrecorderSettings) {
-        val width = image.width
-        val height = image.height
+    private fun ensureCodec(width: Int, height: Int, settings: PrecorderSettings, useSurfaceInput: Boolean) {
 
-        if (formatReady && (width != formatWidth || height != formatHeight)) {
+        if (formatReady && (width != formatWidth || height != formatHeight || codecUsesSurfaceInput != useSurfaceInput)) {
             // Analyzer format changed: cleanly restart encoder state.
             formatReady = false
             formatWidth = 0
@@ -363,6 +487,8 @@ class PrecorderEngine(private val context: Context) {
             encoderOutputFormat = null
             runCatching { codec?.stop() }
             runCatching { codec?.release() }
+            runCatching { codecInputSurface?.release() }
+            codecInputSurface = null
             codec = null
             synchronized(bufferLock) {
                 ringBuffer = EncodedFrameRingBuffer(retentionUs)
@@ -374,9 +500,14 @@ class PrecorderEngine(private val context: Context) {
 
         formatWidth = width
         formatHeight = height
+        codecUsesSurfaceInput = useSurfaceInput
 
         val mediaFormat = MediaFormat.createVideoFormat(MIME_TYPE, formatWidth, formatHeight).apply {
-            setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible)
+            setInteger(
+                MediaFormat.KEY_COLOR_FORMAT,
+                if (useSurfaceInput) MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface
+                else MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible
+            )
             setInteger(MediaFormat.KEY_BIT_RATE, estimateBitrate(settings.targetFps, formatWidth, formatHeight))
             setInteger(MediaFormat.KEY_FRAME_RATE, settings.targetFps)
             setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
@@ -384,6 +515,9 @@ class PrecorderEngine(private val context: Context) {
 
         codec = MediaCodec.createEncoderByType(MIME_TYPE).apply {
             configure(mediaFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            if (useSurfaceInput) {
+                codecInputSurface = createInputSurface()
+            }
             start()
         }
         formatReady = true
@@ -396,7 +530,7 @@ class PrecorderEngine(private val context: Context) {
                 maybeApplyRuntimeExposureOverride(it, settings)
             }
             synchronized(codecLock) {
-                ensureCodec(image, settings)
+                ensureCodec(image.width, image.height, settings, useSurfaceInput = false)
                 val activeCodec = codec ?: return
                 queueInput(activeCodec, image)
                 drainCodec(activeCodec)
@@ -445,6 +579,10 @@ class PrecorderEngine(private val context: Context) {
                         }
                         notifyBufferProgress(getBufferFillRatio())
                         updateEncodedStats(info.presentationTimeUs)
+                        if (activePipeline == CapturePipeline.CAMERA2_HIGHSPEED) {
+                            updateSourceStats(info.presentationTimeUs)
+                            updateQueuedStats(info.presentationTimeUs)
+                        }
                     }
                     codec.releaseOutputBuffer(outIndex, false)
                 }
@@ -526,6 +664,8 @@ class PrecorderEngine(private val context: Context) {
 
     fun release() {
         pauseSession()
+        runCatching { highSpeedSession?.shutdown() }
+        highSpeedSession = null
         analyzerExecutor.shutdown()
         resetEncodingState()
     }
@@ -535,6 +675,7 @@ class PrecorderEngine(private val context: Context) {
         analysis = null
         camera = null
         runCatching { cameraProvider?.unbindAll() }
+        stopHighSpeedSession()
         resetEncodingState()
     }
 
@@ -565,10 +706,13 @@ class PrecorderEngine(private val context: Context) {
             formatReady = false
             formatWidth = 0
             formatHeight = 0
+            codecUsesSurfaceInput = false
             reusableYuvBuffer = null
             runCatching { codec?.stop() }
             runCatching { codec?.release() }
+            runCatching { codecInputSurface?.release() }
             codec = null
+            codecInputSurface = null
         }
     }
 

@@ -59,7 +59,7 @@ class SettingsFragment : PreferenceFragmentCompat() {
         fun updateFpsOptions(selectedId: String?) {
             val id = selectedId ?: return
             val chars = manager.getCameraCharacteristics(id)
-            val supported = collectAppSupportedFps(chars)
+            val supported = (collectAppSupportedFps(chars) + collectHighSpeedFps(chars))
                 .filter { it >= 24 }
                 .distinct()
                 .sorted()
