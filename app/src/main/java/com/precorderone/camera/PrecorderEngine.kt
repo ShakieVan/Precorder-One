@@ -218,30 +218,32 @@ class PrecorderEngine(private val context: Context) {
 
     @Suppress("DEPRECATION")
     private fun Preview.Builder.applyAspect(aspect: String): Preview.Builder {
+        if (forceLowProfile) {
+            when (aspect) {
+                "4:3" -> setTargetResolution(Size(640, 480))
+                else -> setTargetResolution(Size(640, 360))
+            }
+            return this
+        }
         when (aspect) {
-            "4:3" -> {
-                setTargetAspectRatio(AspectRatio.RATIO_4_3)
-                if (forceLowProfile) setTargetResolution(Size(480, 360))
-            }
-            else -> {
-                setTargetAspectRatio(AspectRatio.RATIO_16_9)
-                if (forceLowProfile) setTargetResolution(Size(640, 360))
-            }
+            "4:3" -> setTargetAspectRatio(AspectRatio.RATIO_4_3)
+            else -> setTargetAspectRatio(AspectRatio.RATIO_16_9)
         }
         return this
     }
 
     @Suppress("DEPRECATION")
     private fun ImageAnalysis.Builder.applyAspect(aspect: String): ImageAnalysis.Builder {
+        if (forceLowProfile) {
+            when (aspect) {
+                "4:3" -> setTargetResolution(Size(640, 480))
+                else -> setTargetResolution(Size(640, 360))
+            }
+            return this
+        }
         when (aspect) {
-            "4:3" -> {
-                setTargetAspectRatio(AspectRatio.RATIO_4_3)
-                if (forceLowProfile) setTargetResolution(Size(480, 360))
-            }
-            else -> {
-                setTargetAspectRatio(AspectRatio.RATIO_16_9)
-                if (forceLowProfile) setTargetResolution(Size(640, 360))
-            }
+            "4:3" -> setTargetAspectRatio(AspectRatio.RATIO_4_3)
+            else -> setTargetAspectRatio(AspectRatio.RATIO_16_9)
         }
         return this
     }
@@ -661,24 +663,7 @@ class PrecorderEngine(private val context: Context) {
     }
 
     private fun maybeAutoFallback() {
-        val settings = boundSettings ?: return
-        if (fallbackApplied || settings.targetFps < 120) return
-        val runningMs = System.currentTimeMillis() - bindStartMs
-        if (runningMs < 3_000) return
-        if (inputFps >= settings.targetFps * 0.55f) return
-
-        fallbackApplied = true
-        forceLowProfile = true
-        onProfileFallback?.invoke("Auto-Fallback aktiv: hohe FPS nicht stabil, reduziere Lastprofil")
-
-        val owner = boundOwner
-        val preview = boundPreviewView
-        if (owner != null && preview != null) {
-            ContextCompat.getMainExecutor(context).execute {
-                resetEncodingState()
-                bindInternal(owner, preview, settings.copy(targetFps = 60))
-            }
-        }
+        // Disabled on purpose: keep selected FPS (e.g. 120) for diagnostics/testing.
     }
 
     private fun computeOrientationHint(settings: PrecorderSettings, deviceSurfaceRotation: Int): Int {
