@@ -188,17 +188,10 @@
                 android:layout_gravity="center">
 
                 <!-- Buffer fill as ring around the shutter: amber while filling, green when a full clip is ready. -->
-                <com.google.android.material.progressindicator.CircularProgressIndicator
+                <com.precorderone.ui.BufferRingView
                     android:id="@+id/bufferRing"
                     android:layout_width="match_parent"
-                    android:layout_height="match_parent"
-                    android:max="100"
-                    app:indicatorColor="@color/buffer_amber"
-                    app:indicatorSize="88dp"
-                    app:indicatorTrackGapSize="0dp"
-                    app:trackColor="#33FFFFFF"
-                    app:trackCornerRadius="2dp"
-                    app:trackThickness="4dp" />
+                    android:layout_height="match_parent" />
 
                 <ImageButton
                     android:id="@+id/btnTrigger"

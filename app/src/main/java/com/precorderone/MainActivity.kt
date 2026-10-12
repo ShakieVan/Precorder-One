@@ -538,8 +538,9 @@ class MainActivity : AppCompatActivity() {
                 else -> R.color.buffer_amber
             }
         )
-        binding.bufferRing.setProgressCompat(percent, false)
-        binding.bufferRing.setIndicatorColor(color)
+        // Armed means a full clip is available: show a closed ring even while the fill hovers just below 100 %.
+        binding.bufferRing.setProgress(if (triggerArmed || isSaving) 1f else bufferFill)
+        binding.bufferRing.setColor(color)
         binding.btnTrigger.isEnabled = !isSaving
         binding.btnTrigger.alpha = if (isSaving) 0.6f else 1f
         binding.statusChip.text = when {
