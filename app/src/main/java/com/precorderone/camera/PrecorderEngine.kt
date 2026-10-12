@@ -117,6 +117,10 @@ class PrecorderEngine(private val context: Context) {
     private var requestedTorchEnabled = false
     private var availableNativeZoomSteps: List<Float> = listOf(1f)
     private var currentNativeZoomRatio = 1f
+    // Camera that actually delivers frames (may differ from settings.cameraId after a fallback); read by the export thread.
+    @Volatile
+    private var activeCameraId: String? = null
+    private var lastBufferNotifyMs = 0L
     fun getManualExposurePercent(): Int = manualExposurePercent
     fun getNativeTeleZoomSteps(): List<Float> = availableNativeZoomSteps
     fun getCurrentNativeZoomRatio(): Float = currentNativeZoomRatio
@@ -172,6 +176,7 @@ class PrecorderEngine(private val context: Context) {
                 activePipeline = CapturePipeline.CAMERA2_HIGHSPEED
                 manualSensorModeActive = true
                 activeHighSpeedProfile = profile
+                activeCameraId = profile.cameraId
                 configureNativeZoomForCharacteristics(profile.characteristics)
                 announcePipeline("PIPELINE=CAMERA2_HIGHSPEED, cameraId=${profile.cameraId}, fps=${settings.targetFps}")
                 bindHighSpeed(profile, previewView, highSpeedPreviewView, settings)
@@ -192,6 +197,7 @@ class PrecorderEngine(private val context: Context) {
             activePipeline = CapturePipeline.CAMERA2_NORMAL
             manualSensorModeActive = true
             activeCamera2Profile = camera2Profile
+            activeCameraId = camera2Profile.cameraId
             configureNativeZoomForCharacteristics(camera2Profile.characteristics)
             announcePipeline("PIPELINE=CAMERA2_NORMAL, cameraId=${camera2Profile.cameraId}, fps=${settings.targetFps}")
             bindCamera2Normal(camera2Profile, previewView, highSpeedPreviewView, settings)
@@ -333,6 +339,7 @@ class PrecorderEngine(private val context: Context) {
         }
         val cam = camera ?: return false
         val resolvedCameraId = runCatching { Camera2CameraInfo.from(cam.cameraInfo).cameraId }.getOrNull()
+        activeCameraId = resolvedCameraId
         configureNativeZoomFallback()
         announcePipeline("PIPELINE=CAMERAX_FALLBACK, cameraId=${resolvedCameraId ?: "unknown"}, fps=${settings.targetFps}")
         toggleTorch(settings.torchEnabled)
@@ -974,15 +981,19 @@ class PrecorderEngine(private val context: Context) {
             else -> 0
         }
 
-        val sensorOrientation = runCatching {
+        // Use the camera that actually recorded the frames; its own LENS_FACING decides the formula, not the lens setting.
+        val chars = runCatching {
             val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
-            val id = settings.cameraId ?: return@runCatching 90
-            val chars = manager.getCameraCharacteristics(id)
-            chars.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90
-        }.getOrDefault(90)
+            val id = activeCameraId ?: settings.cameraId ?: return@runCatching null
+            manager.getCameraCharacteristics(id)
+        }.getOrNull()
+        val sensorOrientation = chars?.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90
+        val isFront = chars?.get(CameraCharacteristics.LENS_FACING)?.let { it == CameraCharacteristics.LENS_FACING_FRONT }
+            ?: (settings.lensFacing == CameraSelector.LENS_FACING_FRONT)
 
-        return if (settings.lensFacing == CameraSelector.LENS_FACING_FRONT) {
-            (360 - ((sensorOrientation + deviceDegrees) % 360)) % 360
+        // See CameraCharacteristics.SENSOR_ORIENTATION: front cameras add the device rotation, back cameras subtract it.
+        return if (isFront) {
+            (sensorOrientation + deviceDegrees) % 360
         } else {
             (sensorOrientation - deviceDegrees + 360) % 360
         }

@@ -52,9 +52,11 @@ class SettingsFragment : PreferenceFragmentCompat() {
 
         val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
 
-        fun selectedLensFacing(): Int {
-            return if (lensPref?.value == "front") CameraCharacteristics.LENS_FACING_FRONT else CameraCharacteristics.LENS_FACING_BACK
+        fun lensFacingOf(value: String?): Int {
+            return if (value == "front") CameraCharacteristics.LENS_FACING_FRONT else CameraCharacteristics.LENS_FACING_BACK
         }
+
+        fun selectedLensFacing(): Int = lensFacingOf(lensPref?.value)
 
         fun updateFpsOptions(selectedId: String?) {
             val id = selectedId ?: return
@@ -126,10 +128,10 @@ class SettingsFragment : PreferenceFragmentCompat() {
             true
         }
 
-        lensPref?.setOnPreferenceChangeListener { _, _ ->
-            refreshCameraEntries()
+        // The listener runs before the new value is stored, so lensPref.value still holds the old lens here.
+        lensPref?.setOnPreferenceChangeListener { _, newValue ->
             val ids = manager.cameraIdList.toList()
-            val desiredLens = selectedLensFacing()
+            val desiredLens = lensFacingOf(newValue as? String)
             val byLens = ids.firstOrNull { id ->
                 val chars = manager.getCameraCharacteristics(id)
                 chars.get(CameraCharacteristics.LENS_FACING) == desiredLens
