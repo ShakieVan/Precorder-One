@@ -14,6 +14,18 @@ Depending on device vendor, additional tuning for color format/encoder may be ne
 
 Current stable release: `1.0.0`.
 
+## Updates & releases
+
+The app updates itself from GitHub releases (Einstellungen → App → Nach Updates suchen; automatic check once a day).
+A release is picked up when it is tagged `vX.Y.Z` and has exactly one asset `PrecorderOne-X.Y.Z.apk`
+signed with the release key from `key.properties`.
+
+1. Raise `appVersion` in `app/build.gradle.kts` (the versionCode is derived from it) and merge into `main`.
+2. Write release notes, e.g. `RELEASE_NOTES_V1.1.md`.
+3. Run `scripts\release.ps1 -Notes RELEASE_NOTES_V1.1.md` (builds, tags, pushes and uploads the APK).
+
+Keep the keystore and `key.properties` backed up. Without the same key, installed apps reject every update.
+
 ## Performance rule (mandatory)
 
 - Live recording path must stay as lean as possible.
