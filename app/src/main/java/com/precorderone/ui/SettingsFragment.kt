@@ -5,7 +5,6 @@ import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.os.Bundle
 import android.provider.DocumentsContract
-import android.util.Range
 import android.view.View
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -17,6 +16,7 @@ import androidx.preference.ListPreference
 import androidx.preference.Preference
 import androidx.preference.PreferenceFragmentCompat
 import com.precorderone.R
+import com.precorderone.camera.FpsCatalog
 import com.precorderone.camera.LensCatalog
 import com.precorderone.update.AppUpdater
 import com.precorderone.update.UpdateDialog
@@ -105,11 +105,7 @@ class SettingsFragment : PreferenceFragmentCompat() {
         fun updateFpsOptions(selectedId: String?) {
             val id = selectedId ?: return
             val chars = manager.getCameraCharacteristics(id)
-            val supported = (collectAppSupportedFps(chars) + collectHighSpeedFps(chars))
-                .filter { it >= 24 }
-                .distinct()
-                .sorted()
-                .ifEmpty { listOf(30, 60) }
+            val supported = FpsCatalog.supported(chars)
 
             targetFpsPref?.entries = supported.map { "$it fps" }.toTypedArray()
             targetFpsPref?.entryValues = supported.map { it.toString() }.toTypedArray()
@@ -126,8 +122,8 @@ class SettingsFragment : PreferenceFragmentCompat() {
             // Named like the system camera ("Rückkamera 0.6x"), with what the module can record.
             val labels = ids.map { id ->
                 val chars = manager.getCameraCharacteristics(id)
-                val appMaxFps = collectAppSupportedFps(chars).maxOrNull() ?: 30
-                val highSpeedMaxFps = collectHighSpeedFps(chars).maxOrNull()
+                val appMaxFps = FpsCatalog.normal(chars).maxOrNull() ?: 30
+                val highSpeedMaxFps = FpsCatalog.highSpeed(chars).maxOrNull()
                 val lensName = when (chars.get(CameraCharacteristics.LENS_FACING)) {
                     CameraCharacteristics.LENS_FACING_FRONT -> "Frontkamera"
                     CameraCharacteristics.LENS_FACING_BACK -> "Rückkamera"
@@ -190,34 +186,6 @@ class SettingsFragment : PreferenceFragmentCompat() {
         }
 
         refreshCameraEntries()
-    }
-
-    private fun collectAppSupportedFps(chars: CameraCharacteristics): List<Int> {
-        val values = mutableSetOf<Int>()
-        chars.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
-            ?.forEach { range -> values.addAll(supportedValuesFromAeRange(range)) }
-        return values.toList()
-    }
-
-    private fun collectHighSpeedFps(chars: CameraCharacteristics): List<Int> {
-        val values = mutableSetOf<Int>()
-        val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
-        map?.highSpeedVideoFpsRanges?.forEach { range ->
-            values.add(range.upper)
-            values.add(range.lower)
-        }
-        return values.toList()
-    }
-
-    private fun supportedValuesFromAeRange(range: Range<Int>): List<Int> {
-        val values = mutableListOf<Int>()
-        val candidates = listOf(24, 25, 30, 48, 50, 60, 90, 100, 120, 144, 240)
-        candidates.forEach { candidate ->
-            if (candidate <= 60 && candidate in range.lower..range.upper) values.add(candidate)
-            if (candidate > 60 && range.lower == candidate && range.upper == candidate) values.add(candidate)
-        }
-        if (range.upper <= 60 && range.upper !in values) values.add(range.upper)
-        return values
     }
 
     companion object {

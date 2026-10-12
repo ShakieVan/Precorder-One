@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:paddingHorizontal="24dp"
+    android:paddingTop="8dp"
+    android:paddingBottom="16dp">
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="8dp"
+        android:text="@string/quick_title"
+        android:textAppearance="?attr/textAppearanceTitleLarge" />
+
+    <TextView
+        style="@style/Widget.PrecorderOne.SheetLabel"
+        android:text="@string/quick_fps" />
+
+    <com.google.android.material.chip.ChipGroup
+        android:id="@+id/fpsGroup"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        app:selectionRequired="true"
+        app:singleSelection="true" />
+
+    <TextView
+        style="@style/Widget.PrecorderOne.SheetLabel"
+        android:text="@string/quick_playback" />
+
+    <com.google.android.material.chip.ChipGroup
+        android:id="@+id/playbackGroup"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        app:selectionRequired="true"
+        app:singleSelection="true" />
+
+    <TextView
+        style="@style/Widget.PrecorderOne.SheetLabel"
+        android:text="@string/quick_loop" />
+
+    <com.google.android.material.chip.ChipGroup
+        android:id="@+id/loopGroup"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        app:selectionRequired="true"
+        app:singleSelection="true" />
+
+    <TextView
+        style="@style/Widget.PrecorderOne.SheetLabel"
+        android:text="@string/quick_aspect" />
+
+    <com.google.android.material.chip.ChipGroup
+        android:id="@+id/aspectGroup"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        app:selectionRequired="true"
+        app:singleSelection="true" />
+
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/btnAllSettings"
+        style="@style/Widget.Material3.Button.TextButton"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="end"
+        android:layout_marginTop="12dp"
+        android:text="@string/quick_all_settings" />
+</LinearLayout>

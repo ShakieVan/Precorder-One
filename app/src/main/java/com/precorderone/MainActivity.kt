@@ -39,6 +39,7 @@ import com.precorderone.camera.PrecorderEngine
 import com.precorderone.data.PrecorderSettings
 import com.precorderone.data.SettingsRepository
 import com.precorderone.databinding.ActivityMainBinding
+import com.precorderone.ui.QuickSettingsSheet
 import com.precorderone.ui.SettingsActivity
 import com.precorderone.update.AppUpdater
 import com.precorderone.update.UpdateDialog
@@ -194,6 +195,8 @@ class MainActivity : AppCompatActivity() {
     private fun setupControls() {
         binding.btnTrigger.setOnClickListener { onTrigger() }
         binding.btnSettings.setOnClickListener { startActivity(Intent(this, SettingsActivity::class.java)) }
+        binding.profileChip.setOnClickListener { showQuickSettings() }
+        binding.statusChip.setOnClickListener { showQuickSettings() }
         binding.btnTorch.setOnClickListener { toggleTorch() }
         binding.btnSwitchCamera.setOnClickListener { switchFacing() }
         binding.lastClipThumb.setOnClickListener { openLastClip() }
@@ -229,6 +232,13 @@ class MainActivity : AppCompatActivity() {
 
         binding.previewView.setOnTouchListener { view, event -> handlePreviewTouch(view, event, highSpeedPreview = false) }
         binding.highSpeedPreviewView.setOnTouchListener { view, event -> handlePreviewTouch(view, event, highSpeedPreview = true) }
+    }
+
+    private fun showQuickSettings() {
+        if (isSaving) return
+        QuickSettingsSheet(this, settingsRepository, engine.getActiveCameraId()) {
+            restartCamera(engine.getCurrentZoomRatio())
+        }.show()
     }
 
     private fun applyExposure(progress: Int) {

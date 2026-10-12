@@ -73,6 +73,22 @@ class EncodedFrameRingBufferTest {
     }
 
     @Test
+    fun frameDataStartsAtItsOwnBytes() {
+        // MediaMuxer ignores the buffer position and reads from the buffer start: each frame must be its own slice.
+        val ring = ring(capacity = 1_000)
+        repeat(5) { ring.add(it, 50 + it) }
+        ring.beginRead()!!.use { lease ->
+            lease.frames.forEach { frame ->
+                val data = lease.data(frame)
+                assertEquals(0, data.position())
+                assertEquals(frame.size, data.capacity())
+                val index = (frame.presentationTimeUs / 10_000L).toInt()
+                assertEquals((index % 251).toByte(), data.get(0))
+            }
+        }
+    }
+
+    @Test
     fun onlyOneLeaseAtATime() {
         val ring = ring(capacity = 1_000)
         ring.add(0, 10)

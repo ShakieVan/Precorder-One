@@ -32,6 +32,15 @@
     <string name="pipeline_camera2">Camera2</string>
     <string name="pipeline_camerax">CameraX-Ersatzpfad</string>
 
+    <!-- Schnellmenü (Tipp auf die Chips oben) -->
+    <string name="quick_title">Aufnahme</string>
+    <string name="quick_fps">Bildrate</string>
+    <string name="quick_playback">Wiedergabe</string>
+    <string name="quick_slowmo">%1$d fps · %2$s× Zeitlupe</string>
+    <string name="quick_loop">Puffer-Länge</string>
+    <string name="quick_aspect">Seitenverhältnis</string>
+    <string name="quick_all_settings">Alle Einstellungen</string>
+
     <!-- Einstellungen -->
     <string name="settings_title">Einstellungen</string>
     <string name="settings_back">Zurück</string>

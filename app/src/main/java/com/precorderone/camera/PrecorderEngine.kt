@@ -819,44 +819,19 @@ class PrecorderEngine(private val context: Context) {
         settings: PrecorderSettings,
         deviceSurfaceRotation: Int
     ): Uri? {
-        val firstKeyIndex = lease.frames.indexOfFirst { it.isKeyFrame }
-        if (firstKeyIndex < 0 || lease.frames.size - firstKeyIndex < 8) return null
-        val frames = lease.frames.subList(firstKeyIndex, lease.frames.size)
-
-        // Slow motion by the measured capture rate instead of frame index: a dropped frame leaves its gap
-        // instead of speeding up the clip, and a camera that delivers less than its target still plays smoothly.
-        val firstPts = frames.first().presentationTimeUs
-        val spanUs = frames.last().presentationTimeUs - firstPts
-        val capturedFps = if (spanUs > 0) (frames.size - 1) * 1_000_000.0 / spanUs else settings.targetFps.toDouble()
-        val timeScale = capturedFps / settings.playbackFps.coerceAtLeast(1)
-
+        val frames = ClipMuxer.framesToExport(lease) ?: return null
         val output = createOutputTarget(settings) ?: return null
         return runCatching {
             val outputFd = output.fileDescriptor ?: error("No output file descriptor")
-            val muxer = MediaMuxer(outputFd, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
-            var muxerStarted = false
-            var wroteSamples = false
-            try {
-                muxer.setOrientationHint(computeOrientationHint(settings, deviceSurfaceRotation))
-                val track = muxer.addTrack(format)
-                muxer.start()
-                muxerStarted = true
-
-                frames.forEach { frame ->
-                    val info = MediaCodec.BufferInfo().apply {
-                        offset = 0
-                        size = frame.size
-                        presentationTimeUs = ((frame.presentationTimeUs - firstPts) * timeScale).toLong()
-                        flags = if (frame.isKeyFrame) MediaCodec.BUFFER_FLAG_KEY_FRAME else 0
-                    }
-                    muxer.writeSampleData(track, lease.data(frame), info)
-                    wroteSamples = true
-                }
-                if (!wroteSamples) error("No media samples written")
-            } finally {
-                if (muxerStarted && wroteSamples) runCatching { muxer.stop() }
-                runCatching { muxer.release() }
-            }
+            ClipMuxer.write(
+                lease = lease,
+                frames = frames,
+                format = format,
+                fd = outputFd,
+                orientationHint = computeOrientationHint(settings, deviceSurfaceRotation),
+                playbackFps = settings.playbackFps,
+                fallbackCaptureFps = settings.targetFps
+            )
             output.markCompleted()
             output.uri
         }.onFailure {

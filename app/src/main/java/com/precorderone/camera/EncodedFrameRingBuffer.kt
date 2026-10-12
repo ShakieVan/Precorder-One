@@ -26,11 +26,16 @@ class EncodedFrameRingBuffer internal constructor(
     }
 
     inner class Lease internal constructor(val frames: List<Frame>) : AutoCloseable {
-        /** Bytes of [frame] without copying; valid until the lease is closed. Callers must only read. */
+        /**
+         * Bytes of [frame] without copying, as a buffer that starts at the frame (position 0, capacity = size).
+         * It must be a slice: MediaMuxer's native code reads from the buffer's base address plus BufferInfo.offset
+         * and ignores the position, so a positioned duplicate would hand it the start of the ring for every frame.
+         * Valid until the lease is closed; callers must only read.
+         */
         fun data(frame: Frame): ByteBuffer = memory.duplicate().apply {
             limit(frame.offset + frame.size)
             position(frame.offset)
-        }
+        }.slice()
 
         override fun close() = endRead(this)
     }
