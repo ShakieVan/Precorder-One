@@ -62,6 +62,7 @@ class MainActivity : AppCompatActivity() {
     private var lastPipelineToast: String? = null
     private var lensOptions: List<LensOption> = emptyList()
     private var currentLens: LensOption? = null
+    private var activePhysicalCamera: String? = null
 
     private val permissionsLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -108,6 +109,12 @@ class MainActivity : AppCompatActivity() {
                     lastPipelineToast = msg
                     Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
                 }
+            }
+        }
+        engine.onActivePhysicalCameraChanged = { id ->
+            runOnUiThread {
+                activePhysicalCamera = id
+                updateBufferUi()
             }
         }
         engine.onLensesChanged = { options, current ->
@@ -374,7 +381,10 @@ class MainActivity : AppCompatActivity() {
         binding.btnTrigger.alpha = if (!isSaving) 1f else 0.4f
 
         val target = lastBoundSettings?.targetFps ?: 0
-        binding.debugFpsText.text = getString(R.string.debug_fps, sourceFps, queuedFps, encodedFps, dropRate, target)
+        val fpsText = getString(R.string.debug_fps, sourceFps, queuedFps, encodedFps, dropRate, target)
+        binding.debugFpsText.text = activePhysicalCamera
+            ?.let { fpsText + "\n" + getString(R.string.debug_physical_camera, engine.getActiveCameraId() ?: "?", it) }
+            ?: fpsText
 
         binding.statusText.text = when {
             isSaving -> getString(R.string.status_saving)

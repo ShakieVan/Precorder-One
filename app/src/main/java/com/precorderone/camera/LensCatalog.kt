@@ -5,6 +5,7 @@ import android.hardware.camera2.CameraManager
 import android.os.Build
 import java.util.Locale
 import kotlin.math.abs
+import kotlin.math.ceil
 import kotlin.math.hypot
 import kotlin.math.roundToInt
 
@@ -43,8 +44,12 @@ internal object LensCatalog {
     const val SAME_LENS_TOLERANCE = 0.08f
     private const val MIN_TELE_FACTOR = 1.2f
 
-    /** Native lenses with the same facing as [activeCameraId], sorted from wide to tele. Digital-only steps are left out. */
-    fun lenses(manager: CameraManager, activeCameraId: String): LensSet {
+    /**
+     * Native lenses with the same facing as [activeCameraId], sorted from wide to tele. Digital-only steps are left out.
+     * Without [zoomRatioLenses] only separate camera IDs count: constrained high-speed sessions ignore
+     * CONTROL_ZOOM_RATIO (seen on the Galaxy S24 Ultra at 120 fps), so lenses behind a multi-camera are unreachable.
+     */
+    fun lenses(manager: CameraManager, activeCameraId: String, zoomRatioLenses: Boolean = true): LensSet {
         val chars = mutableMapOf<String, CameraCharacteristics?>()
         fun charsOf(id: String) = chars.getOrPut(id) { runCatching { manager.getCameraCharacteristics(id) }.getOrNull() }
 
@@ -57,19 +62,21 @@ internal object LensCatalog {
         val cameraFactors = mutableMapOf<String, Float>()
         for (id in sameFacing) {
             val c = charsOf(id) ?: continue
-            val idFactor = (fovMetric(c) ?: continue) / reference
+            val idFactor = (fovMetric(c) ?: continue).div(reference).let { if (it >= MIN_TELE_FACTOR) nominal(it) else it }
             cameraFactors[id] = idFactor
             candidates += LensOption(id, 1f, idFactor)
 
-            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) continue
+            if (!zoomRatioLenses || Build.VERSION.SDK_INT < Build.VERSION_CODES.R) continue
             val range = c.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE) ?: continue
             // A zoom range below 1x means the HAL switches to the ultra-wide on its own.
             if (range.lower < 0.95f) candidates += LensOption(id, range.lower, idFactor * range.lower)
             // Tele lenses behind a logical multi-camera, reached through CONTROL_ZOOM_RATIO.
             val ownMetric = fovMetric(c) ?: continue
             for (physicalId in c.physicalCameraIds) {
-                val ratio = (fovMetric(charsOf(physicalId)) ?: continue) / ownMetric
-                if (ratio >= MIN_TELE_FACTOR && ratio <= range.upper) {
+                val raw = (fovMetric(charsOf(physicalId)) ?: continue) / ownMetric
+                if (raw < MIN_TELE_FACTOR) continue
+                val ratio = nominal(raw)
+                if (ratio <= range.upper) {
                     candidates += LensOption(id, ratio, idFactor * ratio)
                 }
             }
@@ -86,6 +93,15 @@ internal object LensCatalog {
             if (result.none { abs(it.factor - option.factor) / option.factor < SAME_LENS_TOLERANCE }) result += option
         }
         return LensSet(result.sortedBy { it.factor }, cameraFactors)
+    }
+
+    /**
+     * Tele lenses are sold as 3x/5x while focal length and sensor size give e.g. 2.7x (S24 Ultra). The HAL switches to
+     * the tele only from its nominal ratio on, so round up to the next whole number when that is close.
+     */
+    private fun nominal(factor: Float): Float {
+        val whole = ceil(factor)
+        return if (whole - factor <= whole * 0.15f) whole else factor
     }
 
     /** Field of view measure: focal length per sensor diagonal (bigger = narrower view). */

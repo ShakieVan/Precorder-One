@@ -74,6 +74,8 @@ class PrecorderEngine(private val context: Context) {
     var onProfileFallback: ((String) -> Unit)? = null
     var onPipelineChanged: ((String) -> Unit)? = null
     var onLensesChanged: ((List<LensOption>, LensOption?) -> Unit)? = null
+    /** Physical lens behind a logical multi-camera that delivers frames right now; null when unknown. */
+    var onActivePhysicalCameraChanged: ((String?) -> Unit)? = null
 
     private var retentionUs: Long = 5_000_000
     private var currentConfigKey: String? = null
@@ -420,6 +422,10 @@ class PrecorderEngine(private val context: Context) {
                 Log.e(TAG, message, throwable)
                 onProfileFallback?.invoke("$message Fallback auf CameraX.")
                 fallbackToCameraX(settings)
+            },
+            onActivePhysicalCamera = { id ->
+                Log.i(TAG, "Active physical camera: $id")
+                onActivePhysicalCameraChanged?.invoke(id)
             }
         ).also { camera2Session = it }
         session.start(
@@ -480,8 +486,12 @@ class PrecorderEngine(private val context: Context) {
 
     /** Lens bar for [cameraId] (empty while no camera is bound); also clamps the zoom to what that camera supports. */
     private fun configureLenses(cameraId: String?) {
+        onActivePhysicalCameraChanged?.invoke(null)
         val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
-        lensSet = cameraId?.let { id -> runCatching { LensCatalog.lenses(manager, id) }.getOrNull() } ?: LensSet.EMPTY
+        val highSpeed = activePipeline == CapturePipeline.CAMERA2_HIGHSPEED
+        lensSet = cameraId?.let { id ->
+            runCatching { LensCatalog.lenses(manager, id, zoomRatioLenses = !highSpeed) }.getOrNull()
+        } ?: LensSet.EMPTY
         if (cameraId != null) {
             Log.i(TAG, "LENSES camera=$cameraId: " + lensSet.options.joinToString { "${it.label}=${it.cameraId}@${it.zoomRatio}" })
         }
@@ -492,6 +502,8 @@ class PrecorderEngine(private val context: Context) {
         }
         currentZoomRatio = when {
             cameraId == null -> currentZoomRatio
+            // High-speed sessions ignore the zoom ratio; anything but 1x would mark the wrong lens as active.
+            highSpeed -> 1f
             range != null -> currentZoomRatio.coerceIn(range.lower, range.upper)
             else -> 1f
         }

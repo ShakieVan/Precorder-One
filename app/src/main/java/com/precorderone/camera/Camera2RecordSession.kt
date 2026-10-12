@@ -6,6 +6,8 @@ import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CaptureRequest
+import android.hardware.camera2.CaptureResult
+import android.hardware.camera2.TotalCaptureResult
 import android.hardware.camera2.params.MeteringRectangle
 import android.media.MediaRecorder
 import android.os.Build
@@ -20,7 +22,8 @@ import kotlin.math.abs
 
 internal class Camera2RecordSession(
     private val context: Context,
-    private val onError: (String, Throwable?) -> Unit
+    private val onError: (String, Throwable?) -> Unit,
+    private val onActivePhysicalCamera: (String) -> Unit = {}
 ) {
     data class Profile(
         val cameraId: String,
@@ -51,12 +54,27 @@ internal class Camera2RecordSession(
     private var generation = 0
     @Volatile
     private var openAttempts = 0
+    private var lastPhysicalCameraId: String? = null
+
+    // Which lens of a logical multi-camera delivers the frames (Android 10+). Shows whether a zoom step really
+    // switched to the tele/ultra-wide or only crops the main sensor.
+    private val captureCallback = object : CameraCaptureSession.CaptureCallback() {
+        override fun onCaptureCompleted(session: CameraCaptureSession, request: CaptureRequest, result: TotalCaptureResult) {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return
+            val id = result.get(CaptureResult.LOGICAL_MULTI_CAMERA_ACTIVE_PHYSICAL_ID) ?: return
+            if (id != lastPhysicalCameraId) {
+                lastPhysicalCameraId = id
+                onActivePhysicalCamera(id)
+            }
+        }
+    }
 
     fun start(profile: Profile, previewView: SurfaceView, encoderSurface: Surface, torch: Boolean, initialZoomRatio: Float) {
         stop()
         running = true
         openRequested = false
         openAttempts = 0
+        lastPhysicalCameraId = null
         activeProfile = profile
         activeEncoderSurface = encoderSurface
         activePreviewView = previewView
@@ -88,7 +106,7 @@ internal class Camera2RecordSession(
         val session = captureSession ?: return
         val handler = cameraHandler ?: return
         val request = buildRequest(afTriggerStart = false) ?: return
-        runCatching { session.setRepeatingRequest(request, null, handler) }
+        runCatching { session.setRepeatingRequest(request, captureCallback, handler) }
     }
 
     fun setZoomRatio(requestedZoomRatio: Float): Boolean {
@@ -98,7 +116,7 @@ internal class Camera2RecordSession(
         val handler = cameraHandler ?: return false
         val request = buildRequest(afTriggerStart = false) ?: return false
         return runCatching {
-            session.setRepeatingRequest(request, null, handler)
+            session.setRepeatingRequest(request, captureCallback, handler)
             true
         }.getOrDefault(false)
     }
@@ -113,7 +131,7 @@ internal class Camera2RecordSession(
         return runCatching {
             session.capture(trigger, null, handler)
             val repeating = buildRequest(afTriggerStart = false) ?: return@runCatching false
-            session.setRepeatingRequest(repeating, null, handler)
+            session.setRepeatingRequest(repeating, captureCallback, handler)
             true
         }.getOrDefault(false)
     }
@@ -124,7 +142,7 @@ internal class Camera2RecordSession(
         val handler = cameraHandler ?: return false
         val request = buildRequest(afTriggerStart = false) ?: return false
         return runCatching {
-            session.setRepeatingRequest(request, null, handler)
+            session.setRepeatingRequest(request, captureCallback, handler)
             true
         }.getOrDefault(false)
     }
@@ -243,7 +261,7 @@ internal class Camera2RecordSession(
                     override fun onConfigured(session: CameraCaptureSession) {
                         captureSession = session
                         val request = buildRequest(afTriggerStart = false) ?: return
-                        session.setRepeatingRequest(request, null, handler)
+                        session.setRepeatingRequest(request, captureCallback, handler)
                     }
 
                     override fun onConfigureFailed(session: CameraCaptureSession) {
