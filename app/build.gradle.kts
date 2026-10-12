@@ -15,7 +15,7 @@ val hasCustomReleaseSigning = keyProperties.getProperty("storeFile")?.isNotBlank
 
 // Single source for the version. versionCode follows X.Y.Z -> X*1_000_000 + Y*1_000 + Z (as in Mau-Mau Flip),
 // so every release is guaranteed to be newer than the one before; the in-app updater relies on that.
-val appVersion = "1.3.0"
+val appVersion = "1.3.1"
 val appVersionCode = appVersion.split(".").map(String::toInt).let { (major, minor, patch) ->
     major * 1_000_000 + minor * 1_000 + patch
 }
