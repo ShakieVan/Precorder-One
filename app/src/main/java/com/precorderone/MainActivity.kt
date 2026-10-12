@@ -11,6 +11,7 @@ import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.SystemClock
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.HapticFeedbackConstants
@@ -79,6 +80,8 @@ class MainActivity : AppCompatActivity() {
     private var activePhysicalCamera: String? = null
     private var lastClipUri: Uri? = null
     private var showDiagnostics = false
+    private var postRollExport: Runnable? = null
+    private var postRollEndsAtMs = 0L
 
     private val permissionsLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -128,6 +131,11 @@ class MainActivity : AppCompatActivity() {
     override fun onPause() {
         super.onPause()
         orientationListener.disable()
+        // Leaving during the post-roll: save now, before the camera stops (the export holds its own buffer lease).
+        postRollExport?.let { export ->
+            binding.root.removeCallbacks(export)
+            export.run()
+        }
         if (hasActiveBinding) {
             engine.pauseSession()
             hasActiveBinding = false
@@ -349,12 +357,17 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateProfileChip(settings: PrecorderSettings) {
         val factor = settings.targetFps.toFloat() / settings.playbackFps.coerceAtLeast(1)
-        binding.profileChip.text = if (factor <= 1.01f) {
+        // Same condition as the engine: sound only in real-time clips and with the microphone permission.
+        val withAudio = settings.recordAudio && settings.targetFps == settings.playbackFps &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        val audioSuffix = if (withAudio) getString(R.string.profile_audio_suffix) else ""
+        val profile = if (factor <= 1.01f) {
             getString(R.string.profile_realtime, settings.targetFps)
         } else {
             val factorText = if (abs(factor - factor.roundToInt()) < 0.05f) "${factor.roundToInt()}" else String.format("%.1f", factor)
             getString(R.string.profile_slowmo, settings.targetFps, factorText)
         }
+        binding.profileChip.text = profile + audioSuffix
     }
 
     private fun handlePreviewTouch(view: View, event: MotionEvent, highSpeedPreview: Boolean): Boolean {
@@ -472,8 +485,23 @@ class MainActivity : AppCompatActivity() {
         binding.btnTrigger.animate().scaleX(0.86f).scaleY(0.86f).setDuration(90).withEndAction {
             binding.btnTrigger.animate().scaleX(1f).scaleY(1f).setDuration(140).start()
         }.start()
-        updateBufferUi()
+        if (settings.postRollSeconds > 0) {
+            // Post-roll: keep recording for the set time, then save the clip including those seconds.
+            postRollEndsAtMs = SystemClock.elapsedRealtime() + settings.postRollSeconds * 1000L
+            val export = Runnable {
+                postRollExport = null
+                startExport(settings)
+            }
+            postRollExport = export
+            binding.root.postDelayed(export, settings.postRollSeconds * 1000L)
+            updateBufferUi()
+        } else {
+            startExport(settings)
+        }
+    }
 
+    private fun startExport(settings: PrecorderSettings) {
+        updateBufferUi()
         engine.exportClip(settings, currentPhysicalRotation) { uri ->
             runOnUiThread {
                 isSaving = false
@@ -544,6 +572,10 @@ class MainActivity : AppCompatActivity() {
         binding.btnTrigger.isEnabled = !isSaving
         binding.btnTrigger.alpha = if (isSaving) 0.6f else 1f
         binding.statusChip.text = when {
+            postRollExport != null -> {
+                val remainingMs = (postRollEndsAtMs - SystemClock.elapsedRealtime()).coerceAtLeast(0)
+                getString(R.string.status_post_roll, ((remainingMs + 999) / 1000).toInt())
+            }
             isSaving -> getString(R.string.status_saving)
             triggerArmed -> getString(R.string.status_ready)
             else -> getString(R.string.status_buffering, percent)
@@ -567,13 +599,20 @@ class MainActivity : AppCompatActivity() {
         else -> Surface.ROTATION_0
     }
 
+    // Volume keys, Bluetooth shutter remotes (most send VOLUME_UP, some ENTER), camera key and headset button.
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
-        val settings = settingsRepository.load()
-        if (keyCode == KeyEvent.KEYCODE_VOLUME_DOWN && settings.triggerWithVolumeDown) {
-            onTrigger()
+        if (keyCode in TRIGGER_KEYS && settingsRepository.load().triggerWithVolumeDown) {
+            // A held key repeats; only the first press saves a clip.
+            if (event == null || event.repeatCount == 0) onTrigger()
             return true
         }
         return super.onKeyDown(keyCode, event)
+    }
+
+    override fun onKeyUp(keyCode: Int, event: KeyEvent?): Boolean {
+        // Swallow the release as well, otherwise the system still shows the volume panel or plays its click.
+        if (keyCode in TRIGGER_KEYS && settingsRepository.load().triggerWithVolumeDown) return true
+        return super.onKeyUp(keyCode, event)
     }
 
     override fun onDestroy() {
@@ -585,6 +624,18 @@ class MainActivity : AppCompatActivity() {
         // Clips have no audio track, so the microphone is not requested (denying it used to block the camera).
         private val REQUIRED_PERMISSIONS = arrayOf(
             Manifest.permission.CAMERA
+        )
+
+        private val TRIGGER_KEYS = setOf(
+            KeyEvent.KEYCODE_VOLUME_DOWN,
+            KeyEvent.KEYCODE_VOLUME_UP,
+            KeyEvent.KEYCODE_CAMERA,
+            KeyEvent.KEYCODE_ENTER,
+            KeyEvent.KEYCODE_NUMPAD_ENTER,
+            KeyEvent.KEYCODE_DPAD_CENTER,
+            KeyEvent.KEYCODE_HEADSETHOOK,
+            KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
+            KeyEvent.KEYCODE_MEDIA_PLAY
         )
 
         // Exposure slider: ±2 EV in thirds, the usual camera granularity.

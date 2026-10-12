@@ -15,6 +15,15 @@
             app:useSimpleSummaryProvider="true" />
 
         <ListPreference
+            app:defaultValue="0"
+            app:entries="@array/post_roll_entries"
+            app:entryValues="@array/post_roll_values"
+            app:iconSpaceReserved="false"
+            app:key="post_roll"
+            app:title="@string/pref_post_roll_title"
+            app:useSimpleSummaryProvider="true" />
+
+        <ListPreference
             app:defaultValue="60"
             app:iconSpaceReserved="false"
             app:key="target_fps"
@@ -38,6 +47,13 @@
             app:key="aspect_ratio"
             app:title="Seitenverhältnis"
             app:useSimpleSummaryProvider="true" />
+
+        <SwitchPreferenceCompat
+            app:defaultValue="false"
+            app:iconSpaceReserved="false"
+            app:key="record_audio"
+            app:summary="@string/pref_audio_summary"
+            app:title="@string/pref_audio_title" />
     </PreferenceCategory>
 
     <PreferenceCategory
@@ -84,8 +100,8 @@
             app:defaultValue="true"
             app:iconSpaceReserved="false"
             app:key="volume_trigger"
-            app:summary="Leiser-Taste speichert einen Clip"
-            app:title="Auslösen mit Lautstärketaste" />
+            app:summary="@string/pref_keys_summary"
+            app:title="@string/pref_keys_title" />
 
         <SwitchPreferenceCompat
             app:defaultValue="false"

@@ -18,7 +18,9 @@ class SettingsRepository(context: Context) {
         cameraId = prefs.getString(KEY_CAMERA_ID, null),
         torchEnabled = prefs.getBoolean(KEY_TORCH, false),
         triggerWithVolumeDown = prefs.getBoolean(KEY_VOLUME_TRIGGER, true),
-        aspectRatio = prefs.getString(KEY_ASPECT_RATIO, "16:9") ?: "16:9"
+        aspectRatio = prefs.getString(KEY_ASPECT_RATIO, "16:9") ?: "16:9",
+        postRollSeconds = prefs.getString(KEY_POST_ROLL, "0")?.toIntOrNull()?.coerceIn(0, 10) ?: 0,
+        recordAudio = prefs.getBoolean(KEY_RECORD_AUDIO, false)
     )
 
     /** UI-only option, kept out of [PrecorderSettings] so toggling it never restarts the camera. */
@@ -35,6 +37,8 @@ class SettingsRepository(context: Context) {
             .putBoolean(KEY_TORCH, settings.torchEnabled)
             .putBoolean(KEY_VOLUME_TRIGGER, settings.triggerWithVolumeDown)
             .putString(KEY_ASPECT_RATIO, settings.aspectRatio)
+            .putString(KEY_POST_ROLL, settings.postRollSeconds.toString())
+            .putBoolean(KEY_RECORD_AUDIO, settings.recordAudio)
             .apply()
     }
 
@@ -49,5 +53,7 @@ class SettingsRepository(context: Context) {
         const val KEY_VOLUME_TRIGGER = "volume_trigger"
         const val KEY_ASPECT_RATIO = "aspect_ratio"
         const val KEY_SHOW_DIAGNOSTICS = "show_diagnostics"
+        const val KEY_POST_ROLL = "post_roll"
+        const val KEY_RECORD_AUDIO = "record_audio"
     }
 }

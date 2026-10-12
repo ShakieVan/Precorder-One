@@ -55,6 +55,12 @@ class QuickSettingsSheet(
         binding.loopGroup.fill(LOOP_SECONDS.map { it.toString() to "$it s" }, settings.loopSeconds.toString()) {
             update(binding) { copy(loopSeconds = it.toInt()) }
         }
+        val postRollOptions = POST_ROLL_SECONDS.map {
+            it.toString() to if (it == 0) context.getString(R.string.quick_post_roll_off) else "$it s"
+        }
+        binding.postRollGroup.fill(postRollOptions, settings.postRollSeconds.toString()) {
+            update(binding) { copy(postRollSeconds = it.toInt()) }
+        }
         binding.aspectGroup.fill(ASPECTS.map { it to it }, settings.aspectRatio) {
             update(binding) { copy(aspectRatio = it) }
         }
@@ -96,6 +102,7 @@ class QuickSettingsSheet(
     companion object {
         private val PLAYBACK_FPS = listOf(24, 30, 60)
         private val LOOP_SECONDS = listOf(5, 10)
+        private val POST_ROLL_SECONDS = listOf(0, 1, 2, 3, 5)
         private val ASPECTS = listOf("16:9", "4:3")
     }
 }

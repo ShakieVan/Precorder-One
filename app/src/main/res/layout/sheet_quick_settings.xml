@@ -50,6 +50,17 @@
 
     <TextView
         style="@style/Widget.PrecorderOne.SheetLabel"
+        android:text="@string/quick_post_roll" />
+
+    <com.google.android.material.chip.ChipGroup
+        android:id="@+id/postRollGroup"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        app:selectionRequired="true"
+        app:singleSelection="true" />
+
+    <TextView
+        style="@style/Widget.PrecorderOne.SheetLabel"
         android:text="@string/quick_aspect" />
 
     <com.google.android.material.chip.ChipGroup

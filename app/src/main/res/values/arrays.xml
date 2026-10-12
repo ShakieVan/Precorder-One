@@ -8,6 +8,21 @@
         <item>10</item>
     </string-array>
 
+    <string-array name="post_roll_entries">
+        <item>Aus</item>
+        <item>1 Sekunde</item>
+        <item>2 Sekunden</item>
+        <item>3 Sekunden</item>
+        <item>5 Sekunden</item>
+    </string-array>
+    <string-array name="post_roll_values">
+        <item>0</item>
+        <item>1</item>
+        <item>2</item>
+        <item>3</item>
+        <item>5</item>
+    </string-array>
+
     <string-array name="aspect_entries">
         <item>16:9 (Standard)</item>
         <item>4:3</item>

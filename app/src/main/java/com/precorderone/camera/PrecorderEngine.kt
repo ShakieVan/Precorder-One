@@ -1,6 +1,8 @@
 package com.precorderone.camera
 
+import android.Manifest
 import android.content.ContentValues
+import android.content.pm.PackageManager
 import android.content.Context
 import android.graphics.ImageFormat
 import android.hardware.camera2.CameraCharacteristics
@@ -82,6 +84,8 @@ class PrecorderEngine(private val context: Context) {
     var onPreviewAspectChanged: ((Float) -> Unit)? = null
 
     private var retentionUs: Long = 5_000_000
+    private var fillReferenceUs: Long = 5_000_000
+    private var audioRecorder: AudioRingRecorder? = null
     private var formatWidth = 0
     private var formatHeight = 0
     private var formatReady = false
@@ -179,9 +183,12 @@ class PrecorderEngine(private val context: Context) {
         // Low-profile tweaks are only relevant on CameraX fallback paths.
         forceLowProfile = false
 
-        retentionUs = (settings.loopSeconds + 1) * 1_000_000L
+        // The ring also has to hold the post-roll; "full" (ready to trigger) only needs the part before the trigger.
+        fillReferenceUs = (settings.loopSeconds + 1) * 1_000_000L
+        retentionUs = fillReferenceUs + settings.postRollSeconds * 1_000_000L
         // A new binding always starts with a fresh encoder and buffer: frames of two configurations never mix.
         stopHighSpeedSession()
+        stopAudio()
         resetEncodingState()
 
         if (settings.targetFps >= 120) {
@@ -312,7 +319,7 @@ class PrecorderEngine(private val context: Context) {
 
     fun getBufferFillRatio(): Float {
         val duration = ringBuffer?.durationUs() ?: 0L
-        return (duration.toFloat() / retentionUs.toFloat()).coerceIn(0f, 1f)
+        return (duration.toFloat() / fillReferenceUs.toFloat()).coerceIn(0f, 1f)
     }
 
     private fun bindInternal(owner: LifecycleOwner, previewView: PreviewView, settings: PrecorderSettings): Boolean {
@@ -363,6 +370,7 @@ class PrecorderEngine(private val context: Context) {
         val resolvedCameraId = runCatching { Camera2CameraInfo.from(cam.cameraInfo).cameraId }.getOrNull()
         activeCameraId = resolvedCameraId
         configureLenses(resolvedCameraId)
+        startAudio(settings, resolvedCameraId)
         announcePipeline(CapturePipeline.CAMERAX, resolvedCameraId, settings.targetFps)
         toggleTorch(settings.torchEnabled)
         if (currentZoomRatio != 1f) runCatching { cam.cameraControl.setZoomRatio(currentZoomRatio) }
@@ -410,6 +418,7 @@ class PrecorderEngine(private val context: Context) {
         )
         onPreviewAspectChanged?.invoke(MeteringMath.displayAspect(profile.characteristics, profile.size))
         startHighSpeedDrainLoop()
+        startAudio(settings, profile.cameraId)
     }
 
     private fun bindCamera2Normal(
@@ -456,6 +465,30 @@ class PrecorderEngine(private val context: Context) {
         )
         onPreviewAspectChanged?.invoke(MeteringMath.displayAspect(profile.characteristics, profile.size))
         startHighSpeedDrainLoop()
+        startAudio(settings, profile.cameraId)
+    }
+
+    /**
+     * Microphone ring beside the video, only when sound can end up in the clip: enabled, permitted and real-time
+     * playback (recording fps = playback fps). Uses the clock of the camera's timestamps so both line up.
+     */
+    private fun startAudio(settings: PrecorderSettings, cameraId: String?) {
+        stopAudio()
+        if (!settings.recordAudio || settings.targetFps != settings.playbackFps) return
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) return
+        val bootTime = cameraId?.let { id ->
+            runCatching {
+                cameraManager().getCameraCharacteristics(id).get(CameraCharacteristics.SENSOR_INFO_TIMESTAMP_SOURCE) ==
+                    CameraCharacteristics.SENSOR_INFO_TIMESTAMP_SOURCE_REALTIME
+            }.getOrNull()
+        } ?: true
+        audioRecorder = AudioRingRecorder(retentionUs, bootTime).takeIf { it.start() }
+        if (audioRecorder == null) onProfileFallback?.invoke("Mikrofon nicht verfügbar – Clips werden ohne Ton gespeichert.")
+    }
+
+    private fun stopAudio() {
+        audioRecorder?.stop()
+        audioRecorder = null
     }
 
     // Encoders reject some sizes a camera offers (e.g. 8K for AVC); configure() then throws instead of returning an error.
@@ -798,18 +831,39 @@ class PrecorderEngine(private val context: Context) {
         }
     }
 
+    /**
+     * Saves the buffer as MP4. The leases are taken right here on the caller's thread, so pausing right after the
+     * call (app sent to background during the post-roll) cannot reset the buffers under the running export.
+     */
     fun exportClip(settings: PrecorderSettings, deviceSurfaceRotation: Int, onDone: (Uri?) -> Unit) {
-        ioScope.launch {
-            // Read pointer: the lease freezes the frames to export while recording continues around them.
-            // Nothing is swapped out, so the buffer is still full right after the save.
-            val lease = ringBuffer?.beginRead()
-            val format = encoderOutputFormat
-            if (lease == null || format == null) {
-                lease?.close()
-                onDone(null)
-                return@launch
+        // Read pointer: the lease freezes the frames to export while recording continues around them.
+        // Nothing is swapped out, so the buffer is still full right after the save.
+        val lease = ringBuffer?.beginRead()
+        val format = encoderOutputFormat
+        if (lease == null || format == null) {
+            lease?.close()
+            onDone(null)
+            return
+        }
+        val audio = audioRecorder?.let { recorder ->
+            val audioFormat = recorder.outputFormat
+            val audioLease = recorder.ring?.beginRead()
+            if (audioFormat != null && audioLease != null) {
+                ClipMuxer.AudioInput(audioLease, audioFormat)
+            } else {
+                audioLease?.close()
+                null
             }
-            onDone(lease.use { exportFrames(it, format, settings, deviceSurfaceRotation) })
+        }
+        val orientationHint = computeOrientationHint(settings, deviceSurfaceRotation)
+        ioScope.launch {
+            val uri = try {
+                exportFrames(lease, format, settings, orientationHint, audio)
+            } finally {
+                lease.close()
+                audio?.lease?.close()
+            }
+            onDone(uri)
         }
     }
 
@@ -817,7 +871,8 @@ class PrecorderEngine(private val context: Context) {
         lease: EncodedFrameRingBuffer.Lease,
         format: MediaFormat,
         settings: PrecorderSettings,
-        deviceSurfaceRotation: Int
+        orientationHint: Int,
+        audio: ClipMuxer.AudioInput?
     ): Uri? {
         val frames = ClipMuxer.framesToExport(lease) ?: return null
         val output = createOutputTarget(settings) ?: return null
@@ -828,9 +883,11 @@ class PrecorderEngine(private val context: Context) {
                 frames = frames,
                 format = format,
                 fd = outputFd,
-                orientationHint = computeOrientationHint(settings, deviceSurfaceRotation),
-                playbackFps = settings.playbackFps,
-                fallbackCaptureFps = settings.targetFps
+                orientationHint = orientationHint,
+                // Slow-motion factor as set (120 -> 30 fps = 4x); real time stays real time even when the camera
+                // delivers fewer frames than its target.
+                timeScale = settings.targetFps.toDouble() / settings.playbackFps.coerceAtLeast(1),
+                audio = audio
             )
             output.markCompleted()
             output.uri
@@ -856,6 +913,7 @@ class PrecorderEngine(private val context: Context) {
         camera = null
         runCatching { cameraProvider?.unbindAll() }
         stopHighSpeedSession()
+        stopAudio()
         activeHighSpeedProfile = null
         // Keep currentZoomRatio: returning from the settings restores the lens that was in use.
         lensSet = LensSet.EMPTY

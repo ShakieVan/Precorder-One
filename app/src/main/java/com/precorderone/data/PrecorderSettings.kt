@@ -9,5 +9,9 @@ data class PrecorderSettings(
     val cameraId: String? = null,
     val torchEnabled: Boolean = false,
     val triggerWithVolumeDown: Boolean = true,
-    val aspectRatio: String = "16:9"
+    val aspectRatio: String = "16:9",
+    /** Seconds recorded after the trigger before the clip is saved. */
+    val postRollSeconds: Int = 0,
+    /** Microphone into its own ring buffer; muxed only into real-time clips. */
+    val recordAudio: Boolean = false
 )

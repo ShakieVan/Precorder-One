@@ -1,6 +1,11 @@
 package com.precorderone.ui
 
+import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
+import android.widget.Toast
+import androidx.core.content.ContextCompat
+import androidx.preference.SwitchPreferenceCompat
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.os.Bundle
@@ -44,8 +49,22 @@ class SettingsFragment : PreferenceFragmentCompat() {
         return if (path.isEmpty()) volumeName else "$volumeName/$path"
     }
 
+    // The microphone is optional: asked for only when sound is switched on, and the switch goes back off if denied.
+    private val requestMicrophone = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (!granted) {
+            findPreference<SwitchPreferenceCompat>(KEY_RECORD_AUDIO)?.isChecked = false
+            context?.let { Toast.makeText(it, R.string.pref_audio_denied, Toast.LENGTH_LONG).show() }
+        }
+    }
+
     override fun onCreatePreferences(savedInstanceState: Bundle?, rootKey: String?) {
         setPreferencesFromResource(R.xml.preferences, rootKey)
+        findPreference<SwitchPreferenceCompat>(KEY_RECORD_AUDIO)?.setOnPreferenceChangeListener { _, newValue ->
+            val granted = ContextCompat.checkSelfPermission(requireContext(), Manifest.permission.RECORD_AUDIO) ==
+                PackageManager.PERMISSION_GRANTED
+            if (newValue == true && !granted) requestMicrophone.launch(Manifest.permission.RECORD_AUDIO)
+            true
+        }
         setupCameraListPreference(requireContext())
         setupStoragePreference()
         setupAspectRatioSummary()
@@ -194,6 +213,7 @@ class SettingsFragment : PreferenceFragmentCompat() {
         private const val KEY_LENS_FACING = "lens_facing"
         private const val KEY_TARGET_FPS = "target_fps"
         private const val KEY_ASPECT_RATIO = "aspect_ratio"
+        private const val KEY_RECORD_AUDIO = "record_audio"
         private const val KEY_APP_VERSION = "app_version"
         private const val KEY_APP_UPDATE = "app_update"
     }

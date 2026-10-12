@@ -32,6 +32,17 @@
     <string name="pipeline_camera2">Camera2</string>
     <string name="pipeline_camerax">CameraX-Ersatzpfad</string>
 
+    <string name="status_post_roll">NACHLAUF %1$d s</string>
+    <string name="profile_audio_suffix"> · Ton</string>
+    <string name="quick_post_roll">Nachlauf nach dem Auslösen</string>
+    <string name="quick_post_roll_off">Aus</string>
+    <string name="pref_post_roll_title">Nachlauf</string>
+    <string name="pref_audio_title">Ton aufnehmen</string>
+    <string name="pref_audio_summary">Nur in Echtzeit-Clips (Aufnahme- = Wiedergabe-Bildrate); bei Zeitlupe ohne Ton</string>
+    <string name="pref_audio_denied">Ohne Mikrofon-Berechtigung kein Ton</string>
+    <string name="pref_keys_title">Auslösen mit Tasten</string>
+    <string name="pref_keys_summary">Lautstärketasten, Bluetooth-Fernauslöser, Kamera- und Kopfhörertaste</string>
+
     <!-- Schnellmenü (Tipp auf die Chips oben) -->
     <string name="quick_title">Aufnahme</string>
     <string name="quick_fps">Bildrate</string>
