@@ -21,6 +21,11 @@ class EncodedFrameRingBuffer(private val retentionUs: Long) {
     @Synchronized
     fun clear() = queue.clear()
 
+    /** Time span between oldest and newest frame, without copying the queue. */
+    @Synchronized
+    fun durationUs(): Long =
+        if (queue.size < 2) 0L else queue.peekLast()!!.presentationTimeUs - queue.peekFirst()!!.presentationTimeUs
+
     private fun trim(latestPtsUs: Long) {
         val cutoff = latestPtsUs - retentionUs
         while (queue.isNotEmpty() && queue.first().presentationTimeUs < cutoff) {

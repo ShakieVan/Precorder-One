@@ -12,6 +12,7 @@ import android.media.MediaFormat
 import android.media.MediaMuxer
 import android.net.Uri
 import android.os.Build
+import android.os.SystemClock
 import android.provider.MediaStore
 import android.util.Log
 import android.util.Range
@@ -287,10 +288,7 @@ class PrecorderEngine(private val context: Context) {
     }
 
     fun getBufferFillRatio(): Float {
-        val snapshot = ringBuffer.snapshot()
-        if (snapshot.size < 2) return 0f
-        val duration = snapshot.last().presentationTimeUs - snapshot.first().presentationTimeUs
-        return (duration.toFloat() / retentionUs.toFloat()).coerceIn(0f, 1f)
+        return (ringBuffer.durationUs().toFloat() / retentionUs.toFloat()).coerceIn(0f, 1f)
     }
 
     private fun bindInternal(owner: LifecycleOwner, previewView: PreviewView, settings: PrecorderSettings): Boolean {
@@ -765,7 +763,12 @@ class PrecorderEngine(private val context: Context) {
                                 )
                             )
                         }
-                        notifyBufferProgress(getBufferFillRatio())
+                        // The UI only needs ~10 updates per second, not one per frame (up to 240/s).
+                        val nowMs = SystemClock.elapsedRealtime()
+                        if (nowMs - lastBufferNotifyMs >= BUFFER_NOTIFY_INTERVAL_MS) {
+                            lastBufferNotifyMs = nowMs
+                            notifyBufferProgress(getBufferFillRatio())
+                        }
                         updateEncodedStats(info.presentationTimeUs)
                         if (activePipeline == CapturePipeline.CAMERA2_HIGHSPEED) {
                             updateSourceStats(info.presentationTimeUs)
@@ -1143,5 +1146,6 @@ class PrecorderEngine(private val context: Context) {
         private const val MIME_TYPE = "video/avc"
         private val PREFERRED_NATIVE_ZOOM_STEPS = listOf(0.6f, 1f, 3f, 5f)
         private const val ZOOM_EPSILON = 0.001f
+        private const val BUFFER_NOTIFY_INTERVAL_MS = 100L
     }
 }
