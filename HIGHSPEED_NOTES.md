@@ -151,7 +151,7 @@ Grund:
 
 - Der Aufnahme-/Encode-Pfad darf nicht verlangsamt werden.
 - Zoom ist erlaubt, aber nur hardwarebasiert ueber `CONTROL_ZOOM_RATIO` (kein CPU-Crop im Livepfad).
-- Bevorzugte feste Native-Stufen: `0.6x`, `1x`, `3x`, `5x` (pro Kamera auf verfuegbare Range gefiltert).
+- Objektiv-Stufen werden pro Geraet berechnet (`LensCatalog`, Brennweite/Sensorgroesse): eigene Kamera-IDs (z. B. Samsung-Ultraweitwinkel = ID 2) oder Zoom-Ratio einer logischen Multi-Kamera. Keine rein digitalen Stufen (ab 1.1.1).
 - Keine App-seitigen per-frame Pixelkopien fuer Zoom im laufenden Capture-Loop.
 
 ## Update RC4: Native Tele Zoom + UI

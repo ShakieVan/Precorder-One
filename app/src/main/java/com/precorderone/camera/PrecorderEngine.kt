@@ -73,7 +73,7 @@ class PrecorderEngine(private val context: Context) {
     var onDebugStatsChanged: ((Float, Float, Float, Float) -> Unit)? = null
     var onProfileFallback: ((String) -> Unit)? = null
     var onPipelineChanged: ((String) -> Unit)? = null
-    var onNativeZoomChanged: ((List<Float>, Float) -> Unit)? = null
+    var onLensesChanged: ((List<LensOption>, LensOption?) -> Unit)? = null
 
     private var retentionUs: Long = 5_000_000
     private var currentConfigKey: String? = null
@@ -116,15 +116,15 @@ class PrecorderEngine(private val context: Context) {
     private var unsupportedExactFpsNotified: Int? = null
     private var highSpeedDrainActive = false
     private var requestedTorchEnabled = false
-    private var availableNativeZoomSteps: List<Float> = listOf(1f)
-    private var currentNativeZoomRatio = 1f
+    private var lensSet: LensSet = LensSet.EMPTY
+    private var currentZoomRatio = 1f
     // Camera that actually delivers frames (may differ from settings.cameraId after a fallback); read by the export thread.
     @Volatile
     private var activeCameraId: String? = null
     private var lastBufferNotifyMs = 0L
     fun getManualExposurePercent(): Int = manualExposurePercent
-    fun getNativeTeleZoomSteps(): List<Float> = availableNativeZoomSteps
-    fun getCurrentNativeZoomRatio(): Float = currentNativeZoomRatio
+    fun getActiveCameraId(): String? = activeCameraId
+    fun getCurrentZoomRatio(): Float = currentZoomRatio
 
     fun setManualExposurePercent(percent: Int) {
         manualExposurePercent = percent.coerceIn(20, 100)
@@ -134,7 +134,14 @@ class PrecorderEngine(private val context: Context) {
         maybeApplyRuntimeExposureOverride(cam, settings)
     }
 
-    fun bind(owner: LifecycleOwner, previewView: PreviewView, highSpeedPreviewView: SurfaceView, settings: PrecorderSettings) {
+    fun bind(
+        owner: LifecycleOwner,
+        previewView: PreviewView,
+        highSpeedPreviewView: SurfaceView,
+        settings: PrecorderSettings,
+        initialZoomRatio: Float = 1f
+    ) {
+        currentZoomRatio = initialZoomRatio
         boundOwner = owner
         boundPreviewView = previewView
         boundHighSpeedPreviewView = highSpeedPreviewView
@@ -178,7 +185,7 @@ class PrecorderEngine(private val context: Context) {
                 manualSensorModeActive = true
                 activeHighSpeedProfile = profile
                 activeCameraId = profile.cameraId
-                configureNativeZoomForCharacteristics(profile.characteristics)
+                configureLenses(profile.cameraId)
                 announcePipeline("PIPELINE=CAMERA2_HIGHSPEED, cameraId=${profile.cameraId}, fps=${settings.targetFps}")
                 bindHighSpeed(profile, previewView, highSpeedPreviewView, settings)
                 return
@@ -199,7 +206,7 @@ class PrecorderEngine(private val context: Context) {
             manualSensorModeActive = true
             activeCamera2Profile = camera2Profile
             activeCameraId = camera2Profile.cameraId
-            configureNativeZoomForCharacteristics(camera2Profile.characteristics)
+            configureLenses(camera2Profile.cameraId)
             announcePipeline("PIPELINE=CAMERA2_NORMAL, cameraId=${camera2Profile.cameraId}, fps=${settings.targetFps}")
             bindCamera2Normal(camera2Profile, previewView, highSpeedPreviewView, settings)
             return
@@ -210,7 +217,7 @@ class PrecorderEngine(private val context: Context) {
         manualSensorModeActive = false
         activeCamera2Profile = null
         activeHighSpeedProfile = null
-        configureNativeZoomFallback()
+        configureLenses(null)
         stopHighSpeedSession()
         val providerFuture = ProcessCameraProvider.getInstance(context)
         providerFuture.addListener({
@@ -234,22 +241,22 @@ class PrecorderEngine(private val context: Context) {
         camera?.cameraControl?.enableTorch(enabled)
     }
 
-    fun setNativeTeleZoomRatio(requestedRatio: Float): Boolean {
-        val snapped = nearestZoomStep(requestedRatio)
+    /** Zoom on the active camera; switching to another camera ID is a rebind with [bind]'s initialZoomRatio. */
+    fun setZoomRatio(ratio: Float): Boolean {
         val applied = when (activePipeline) {
-            CapturePipeline.CAMERA2_NORMAL -> camera2Session?.setZoomRatio(snapped) ?: false
-            CapturePipeline.CAMERA2_HIGHSPEED -> highSpeedSession?.setZoomRatio(snapped) ?: false
+            CapturePipeline.CAMERA2_NORMAL -> camera2Session?.setZoomRatio(ratio) ?: false
+            CapturePipeline.CAMERA2_HIGHSPEED -> highSpeedSession?.setZoomRatio(ratio) ?: false
             CapturePipeline.CAMERAX -> {
                 val cam = camera ?: return false
                 runCatching {
-                    cam.cameraControl.setZoomRatio(snapped)
+                    cam.cameraControl.setZoomRatio(ratio)
                     true
                 }.getOrDefault(false)
             }
         }
         if (!applied) return false
-        currentNativeZoomRatio = snapped
-        notifyNativeZoomChanged()
+        currentZoomRatio = ratio
+        notifyLensesChanged()
         return true
     }
 
@@ -338,9 +345,10 @@ class PrecorderEngine(private val context: Context) {
         val cam = camera ?: return false
         val resolvedCameraId = runCatching { Camera2CameraInfo.from(cam.cameraInfo).cameraId }.getOrNull()
         activeCameraId = resolvedCameraId
-        configureNativeZoomFallback()
+        configureLenses(resolvedCameraId)
         announcePipeline("PIPELINE=CAMERAX_FALLBACK, cameraId=${resolvedCameraId ?: "unknown"}, fps=${settings.targetFps}")
         toggleTorch(settings.torchEnabled)
+        if (currentZoomRatio != 1f) runCatching { cam.cameraControl.setZoomRatio(currentZoomRatio) }
         return true
     }
 
@@ -379,7 +387,7 @@ class PrecorderEngine(private val context: Context) {
             previewView = highSpeedPreviewView,
             encoderSurface = inputSurface,
             torch = requestedTorchEnabled,
-            initialZoomRatio = currentNativeZoomRatio
+            initialZoomRatio = currentZoomRatio
         )
         startHighSpeedDrainLoop()
     }
@@ -419,7 +427,7 @@ class PrecorderEngine(private val context: Context) {
             previewView = highSpeedPreviewView,
             encoderSurface = inputSurface,
             torch = requestedTorchEnabled,
-            initialZoomRatio = currentNativeZoomRatio
+            initialZoomRatio = currentZoomRatio
         )
         startHighSpeedDrainLoop()
     }
@@ -442,7 +450,6 @@ class PrecorderEngine(private val context: Context) {
         manualSensorModeActive = false
         activeCamera2Profile = null
         activeHighSpeedProfile = null
-        configureNativeZoomFallback()
         val owner = boundOwner ?: return
         val preview = boundPreviewView ?: return
         val hsPreview = boundHighSpeedPreviewView ?: return
@@ -471,36 +478,28 @@ class PrecorderEngine(private val context: Context) {
         }
     }
 
-    private fun configureNativeZoomForCharacteristics(characteristics: CameraCharacteristics) {
-        availableNativeZoomSteps = computeNativeZoomSteps(characteristics)
-        currentNativeZoomRatio = nearestZoomStep(currentNativeZoomRatio)
-        notifyNativeZoomChanged()
-    }
-
-    private fun configureNativeZoomFallback() {
-        availableNativeZoomSteps = listOf(1f)
-        currentNativeZoomRatio = 1f
-        notifyNativeZoomChanged()
-    }
-
-    private fun computeNativeZoomSteps(characteristics: CameraCharacteristics): List<Float> {
-        val preferred = PREFERRED_NATIVE_ZOOM_STEPS
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return listOf(1f)
-        val range = characteristics.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE) ?: return listOf(1f)
-        val filtered = preferred.filter { it in range.lower..range.upper }
-        return when {
-            filtered.isEmpty() -> listOf(1f.coerceIn(range.lower, range.upper))
-            filtered.any { abs(it - 1f) < ZOOM_EPSILON } -> filtered
-            else -> (filtered + 1f.coerceIn(range.lower, range.upper)).distinct().sorted()
+    /** Lens bar for [cameraId] (empty while no camera is bound); also clamps the zoom to what that camera supports. */
+    private fun configureLenses(cameraId: String?) {
+        val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+        lensSet = cameraId?.let { id -> runCatching { LensCatalog.lenses(manager, id) }.getOrNull() } ?: LensSet.EMPTY
+        if (cameraId != null) {
+            Log.i(TAG, "LENSES camera=$cameraId: " + lensSet.options.joinToString { "${it.label}=${it.cameraId}@${it.zoomRatio}" })
         }
+        val range = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && cameraId != null) {
+            runCatching { manager.getCameraCharacteristics(cameraId).get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE) }.getOrNull()
+        } else {
+            null
+        }
+        currentZoomRatio = when {
+            cameraId == null -> currentZoomRatio
+            range != null -> currentZoomRatio.coerceIn(range.lower, range.upper)
+            else -> 1f
+        }
+        notifyLensesChanged()
     }
 
-    private fun nearestZoomStep(requested: Float): Float {
-        return availableNativeZoomSteps.minByOrNull { abs(it - requested) } ?: 1f
-    }
-
-    private fun notifyNativeZoomChanged() {
-        onNativeZoomChanged?.invoke(availableNativeZoomSteps, currentNativeZoomRatio)
+    private fun notifyLensesChanged() {
+        onLensesChanged?.invoke(lensSet.options, lensSet.current(activeCameraId, currentZoomRatio))
     }
 
     private fun startHighSpeedDrainLoop() {
@@ -873,7 +872,9 @@ class PrecorderEngine(private val context: Context) {
         runCatching { cameraProvider?.unbindAll() }
         stopHighSpeedSession()
         activeHighSpeedProfile = null
-        configureNativeZoomFallback()
+        // Keep currentZoomRatio: returning from the settings restores the lens that was in use.
+        lensSet = LensSet.EMPTY
+        notifyLensesChanged()
         resetEncodingState()
     }
 
@@ -1144,8 +1145,6 @@ class PrecorderEngine(private val context: Context) {
     companion object {
         private const val TAG = "PrecorderEngine"
         private const val MIME_TYPE = "video/avc"
-        private val PREFERRED_NATIVE_ZOOM_STEPS = listOf(0.6f, 1f, 3f, 5f)
-        private const val ZOOM_EPSILON = 0.001f
         private const val BUFFER_NOTIFY_INTERVAL_MS = 100L
     }
 }

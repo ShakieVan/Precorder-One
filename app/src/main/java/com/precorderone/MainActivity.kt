@@ -4,13 +4,16 @@ import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.util.TypedValue
+import android.view.Gravity
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.OrientationEventListener
 import android.view.Surface
 import android.view.View
 import android.view.ViewConfiguration
-import android.widget.Button
+import android.widget.LinearLayout
+import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -21,6 +24,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import com.google.android.material.snackbar.Snackbar
+import com.precorderone.camera.LensOption
 import com.precorderone.camera.PrecorderEngine
 import com.precorderone.data.PrecorderSettings
 import com.precorderone.data.SettingsRepository
@@ -56,8 +60,8 @@ class MainActivity : AppCompatActivity() {
     private var touchSlopPx = 0
     private var focusLocked = false
     private var lastPipelineToast: String? = null
-    private var availableNativeZoomSteps: List<Float> = listOf(1f)
-    private var currentNativeZoomRatio: Float = 1f
+    private var lensOptions: List<LensOption> = emptyList()
+    private var currentLens: LensOption? = null
 
     private val permissionsLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -106,11 +110,12 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }
-        engine.onNativeZoomChanged = { steps, current ->
+        engine.onLensesChanged = { options, current ->
             runOnUiThread {
-                availableNativeZoomSteps = steps
-                currentNativeZoomRatio = current
-                updateZoomUi()
+                val rebuild = options != lensOptions
+                lensOptions = options
+                currentLens = current
+                updateZoomUi(rebuild)
             }
         }
 
@@ -152,10 +157,6 @@ class MainActivity : AppCompatActivity() {
             updateFocusUi()
         }
         binding.btnSettings.setOnClickListener { startActivity(Intent(this, SettingsActivity::class.java)) }
-        binding.btnZoom06.setOnClickListener { onNativeZoomStepSelected(0.6f) }
-        binding.btnZoom1.setOnClickListener { onNativeZoomStepSelected(1f) }
-        binding.btnZoom3.setOnClickListener { onNativeZoomStepSelected(3f) }
-        binding.btnZoom5.setOnClickListener { onNativeZoomStepSelected(5f) }
         binding.previewView.setOnTouchListener { _, event -> handlePreviewTouch(event, allowTapFocus = true, highSpeedPreview = false) }
         binding.highSpeedPreviewView.setOnTouchListener { _, event -> handlePreviewTouch(event, allowTapFocus = true, highSpeedPreview = true) }
         binding.previewView.previewStreamState.observe(this) { state ->
@@ -164,7 +165,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
         updateFocusUi()
-        updateZoomUi()
+        updateZoomUi(rebuild = true)
         setupUpdateHint()
 
         requestPermissionsIfNeeded()
@@ -216,12 +217,15 @@ class MainActivity : AppCompatActivity() {
     private fun hasPermissions(): Boolean =
         REQUIRED_PERMISSIONS.all { ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED }
 
-    private fun bindCamera() {
+    private fun bindCamera(zoomRatio: Float? = null) {
         val settings = settingsRepository.load()
         if (hasActiveBinding && settings == lastBoundSettings) {
             return
         }
-        engine.bind(this, binding.previewView, binding.highSpeedPreviewView, settings)
+        // Same camera as before (e.g. back from the settings): keep the lens that was in use.
+        val initialZoom = zoomRatio
+            ?: if (settings.cameraId == lastBoundSettings?.cameraId) engine.getCurrentZoomRatio() else 1f
+        engine.bind(this, binding.previewView, binding.highSpeedPreviewView, settings, initialZoom)
         hasActiveBinding = true
         lastBoundSettings = settings
         isRecordingLoop = true
@@ -229,22 +233,23 @@ class MainActivity : AppCompatActivity() {
         isSaving = false
         triggerArmed = false
         focusLocked = false
-        availableNativeZoomSteps = engine.getNativeTeleZoomSteps()
-        currentNativeZoomRatio = engine.getCurrentNativeZoomRatio()
         updateFocusUi()
-        updateZoomUi()
         updateBufferUi()
     }
 
-    private fun onNativeZoomStepSelected(step: Float) {
-        if (!availableNativeZoomSteps.any { abs(it - step) < 0.001f }) return
-        val applied = engine.setNativeTeleZoomRatio(step)
-        if (!applied) {
-            Toast.makeText(this, R.string.zoom_set_failed, Toast.LENGTH_SHORT).show()
+    private fun onLensSelected(option: LensOption) {
+        if (isSaving || option == currentLens) return
+        if (option.cameraId == engine.getActiveCameraId()) {
+            if (!engine.setZoomRatio(option.zoomRatio)) {
+                Toast.makeText(this, R.string.zoom_set_failed, Toast.LENGTH_SHORT).show()
+            }
             return
         }
-        currentNativeZoomRatio = step
-        updateZoomUi()
+        // Lens is its own camera ID: store it like the settings screen does, then reopen with that camera.
+        settingsRepository.save(settingsRepository.load().copy(cameraId = option.cameraId))
+        engine.pauseSession()
+        hasActiveBinding = false
+        bindCamera(zoomRatio = option.zoomRatio)
     }
 
     private fun handlePreviewTouch(
@@ -299,23 +304,35 @@ class MainActivity : AppCompatActivity() {
         binding.btnFocusAuto.visibility = if (canShow) View.VISIBLE else View.GONE
     }
 
-    private fun updateZoomUi() {
-        val steps = listOf(
-            0.6f to binding.btnZoom06,
-            1f to binding.btnZoom1,
-            3f to binding.btnZoom3,
-            5f to binding.btnZoom5
-        )
-        val hasAny = availableNativeZoomSteps.isNotEmpty()
-        binding.zoomControlsContainer.visibility = if (hasAny) View.VISIBLE else View.GONE
-        steps.forEach { (step, button) ->
-            val available = availableNativeZoomSteps.any { abs(it - step) < 0.001f }
-            button.visibility = if (available) View.VISIBLE else View.GONE
-            setZoomButtonState(button, available && abs(currentNativeZoomRatio - step) < 0.001f)
+    /** One button per native lens; a single lens needs no bar. */
+    private fun updateZoomUi(rebuild: Boolean) {
+        val container = binding.zoomControlsContainer
+        if (rebuild) {
+            container.removeAllViews()
+            val density = resources.displayMetrics.density
+            lensOptions.forEachIndexed { index, option ->
+                val button = TextView(this).apply {
+                    text = option.label
+                    contentDescription = getString(R.string.lens_button_description, option.label)
+                    gravity = Gravity.CENTER
+                    includeFontPadding = false
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+                    isClickable = true
+                    isFocusable = true
+                    setOnClickListener { onLensSelected(option) }
+                }
+                val params = LinearLayout.LayoutParams((58 * density).toInt(), (38 * density).toInt())
+                if (index > 0) params.marginStart = (4 * density).toInt()
+                container.addView(button, params)
+            }
+        }
+        container.visibility = if (lensOptions.size > 1) View.VISIBLE else View.GONE
+        lensOptions.forEachIndexed { index, option ->
+            (container.getChildAt(index) as? TextView)?.let { setZoomButtonState(it, option == currentLens) }
         }
     }
 
-    private fun setZoomButtonState(button: Button, selected: Boolean) {
+    private fun setZoomButtonState(button: TextView, selected: Boolean) {
         button.alpha = if (selected) 1f else 0.65f
         button.setBackgroundResource(
             if (selected) R.drawable.bg_zoom_button_selected else R.drawable.bg_zoom_button_idle
