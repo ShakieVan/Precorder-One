@@ -50,7 +50,7 @@ import kotlin.math.abs
 
 @ExperimentalCamera2Interop
 class PrecorderEngine(private val context: Context) {
-    private enum class CapturePipeline { CAMERAX, CAMERA2_NORMAL, CAMERA2_HIGHSPEED }
+    enum class CapturePipeline { CAMERAX, CAMERA2_NORMAL, CAMERA2_HIGHSPEED }
 
     private var activePipeline: CapturePipeline = CapturePipeline.CAMERAX
     private var camera: Camera? = null
@@ -72,7 +72,7 @@ class PrecorderEngine(private val context: Context) {
     var onMeasuredFpsChanged: ((Float) -> Unit)? = null
     var onDebugStatsChanged: ((Float, Float, Float, Float) -> Unit)? = null
     var onProfileFallback: ((String) -> Unit)? = null
-    var onPipelineChanged: ((String) -> Unit)? = null
+    var onPipelineChanged: ((CapturePipeline, String?) -> Unit)? = null
     var onLensesChanged: ((List<LensOption>, LensOption?) -> Unit)? = null
     /** Physical lens behind a logical multi-camera that delivers frames right now; null when unknown. */
     var onActivePhysicalCameraChanged: ((String?) -> Unit)? = null
@@ -188,11 +188,11 @@ class PrecorderEngine(private val context: Context) {
                 activeHighSpeedProfile = profile
                 activeCameraId = profile.cameraId
                 configureLenses(profile.cameraId)
-                announcePipeline("PIPELINE=CAMERA2_HIGHSPEED, cameraId=${profile.cameraId}, fps=${settings.targetFps}")
+                announcePipeline(CapturePipeline.CAMERA2_HIGHSPEED, profile.cameraId, settings.targetFps)
                 bindHighSpeed(profile, previewView, highSpeedPreviewView, settings)
                 return
             }
-            onProfileFallback?.invoke("Camera2 Performance-Pfad fuer ${settings.targetFps} fps nicht verfuegbar. Fallback auf CameraX.")
+            onProfileFallback?.invoke("High-Speed mit ${settings.targetFps} fps gibt es auf dieser Kamera nicht. Aufnahme mit der höchsten normalen Bildrate.")
         }
 
         // Guardrail: regular live capture must stay on Camera2 surface pipeline to avoid CPU-heavy YUV copies.
@@ -209,7 +209,7 @@ class PrecorderEngine(private val context: Context) {
             activeCamera2Profile = camera2Profile
             activeCameraId = camera2Profile.cameraId
             configureLenses(camera2Profile.cameraId)
-            announcePipeline("PIPELINE=CAMERA2_NORMAL, cameraId=${camera2Profile.cameraId}, fps=${settings.targetFps}")
+            announcePipeline(CapturePipeline.CAMERA2_NORMAL, camera2Profile.cameraId, settings.targetFps)
             bindCamera2Normal(camera2Profile, previewView, highSpeedPreviewView, settings)
             return
         }
@@ -348,7 +348,7 @@ class PrecorderEngine(private val context: Context) {
         val resolvedCameraId = runCatching { Camera2CameraInfo.from(cam.cameraInfo).cameraId }.getOrNull()
         activeCameraId = resolvedCameraId
         configureLenses(resolvedCameraId)
-        announcePipeline("PIPELINE=CAMERAX_FALLBACK, cameraId=${resolvedCameraId ?: "unknown"}, fps=${settings.targetFps}")
+        announcePipeline(CapturePipeline.CAMERAX, resolvedCameraId, settings.targetFps)
         toggleTorch(settings.torchEnabled)
         if (currentZoomRatio != 1f) runCatching { cam.cameraControl.setZoomRatio(currentZoomRatio) }
         return true
@@ -931,9 +931,9 @@ class PrecorderEngine(private val context: Context) {
         onBufferFillChanged?.invoke(value.coerceIn(0f, 1f))
     }
 
-    private fun announcePipeline(message: String) {
-        Log.i(TAG, message)
-        onPipelineChanged?.invoke(message)
+    private fun announcePipeline(pipeline: CapturePipeline, cameraId: String?, fps: Int) {
+        Log.i(TAG, "PIPELINE=$pipeline, cameraId=${cameraId ?: "unknown"}, fps=$fps")
+        onPipelineChanged?.invoke(pipeline, cameraId)
     }
 
 

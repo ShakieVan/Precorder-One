@@ -12,7 +12,11 @@
     <string name="focus_failed">Fokus aktuell nicht verfügbar</string>
     <string name="debug_fps_initial">FPS: --.-</string>
     <string name="debug_fps">Src: %1$.1f | Q: %2$.1f | Enc: %3$.1f | Drop: %4$.0f%% | Ziel: %5$d</string>
-    <string name="debug_physical_camera">Kamera %1$s · Objektiv-ID %2$s</string>
+    <string name="debug_pipeline">%1$s · Kamera %2$s</string>
+    <string name="debug_physical_camera"> · Objektiv-ID %1$s</string>
+    <string name="pipeline_highspeed">High-Speed</string>
+    <string name="pipeline_camera2">Camera2</string>
+    <string name="pipeline_camerax">CameraX-Ersatzpfad</string>
     <string name="exposure_initial">Belichtung: --%</string>
     <string name="exposure_label">Belichtung: %1$d%%</string>
     <string name="focus_auto_button">Autofokus wieder aktivieren</string>

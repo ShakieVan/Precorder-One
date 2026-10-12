@@ -59,7 +59,7 @@ class MainActivity : AppCompatActivity() {
     private var touchMoved = false
     private var touchSlopPx = 0
     private var focusLocked = false
-    private var lastPipelineToast: String? = null
+    private var pipelineInfo: String? = null
     private var lensOptions: List<LensOption> = emptyList()
     private var currentLens: LensOption? = null
     private var activePhysicalCamera: String? = null
@@ -103,12 +103,18 @@ class MainActivity : AppCompatActivity() {
         engine.onProfileFallback = { msg ->
             runOnUiThread { Toast.makeText(this, msg, Toast.LENGTH_LONG).show() }
         }
-        engine.onPipelineChanged = { msg ->
+        // Shown in the diagnostics line instead of a toast: toasts sit right on top of the lens bar.
+        engine.onPipelineChanged = { pipeline, cameraId ->
             runOnUiThread {
-                if (msg != lastPipelineToast) {
-                    lastPipelineToast = msg
-                    Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
-                }
+                val name = getString(
+                    when (pipeline) {
+                        PrecorderEngine.CapturePipeline.CAMERA2_HIGHSPEED -> R.string.pipeline_highspeed
+                        PrecorderEngine.CapturePipeline.CAMERA2_NORMAL -> R.string.pipeline_camera2
+                        PrecorderEngine.CapturePipeline.CAMERAX -> R.string.pipeline_camerax
+                    }
+                )
+                pipelineInfo = getString(R.string.debug_pipeline, name, cameraId ?: "?")
+                updateBufferUi()
             }
         }
         engine.onActivePhysicalCameraChanged = { id ->
@@ -382,9 +388,10 @@ class MainActivity : AppCompatActivity() {
 
         val target = lastBoundSettings?.targetFps ?: 0
         val fpsText = getString(R.string.debug_fps, sourceFps, queuedFps, encodedFps, dropRate, target)
-        binding.debugFpsText.text = activePhysicalCamera
-            ?.let { fpsText + "\n" + getString(R.string.debug_physical_camera, engine.getActiveCameraId() ?: "?", it) }
-            ?: fpsText
+        val cameraLine = pipelineInfo?.let { info ->
+            info + (activePhysicalCamera?.let { getString(R.string.debug_physical_camera, it) } ?: "")
+        }
+        binding.debugFpsText.text = if (cameraLine != null) "$fpsText\n$cameraLine" else fpsText
 
         binding.statusText.text = when {
             isSaving -> getString(R.string.status_saving)
