@@ -1,0 +1,10 @@
+<resources>
+    <color name="brand_red">#FF453A</color>
+    <color name="buffer_amber">#FFB020</color>
+    <color name="ready_green">#32D74B</color>
+    <color name="surface_dark">#121417</color>
+    <color name="surface_container">#1C1F24</color>
+    <color name="scrim">#99000000</color>
+    <color name="scrim_light">#59000000</color>
+    <color name="text_secondary">#B3FFFFFF</color>
+</resources>

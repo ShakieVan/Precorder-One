@@ -8,7 +8,6 @@ import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CaptureRequest
 import android.hardware.camera2.CaptureResult
 import android.hardware.camera2.TotalCaptureResult
-import android.hardware.camera2.params.MeteringRectangle
 import android.media.MediaRecorder
 import android.os.Build
 import android.os.Handler
@@ -47,6 +46,7 @@ internal class Camera2RecordSession(
     private var focusNormX = 0.5f
     private var focusNormY = 0.5f
     private var zoomRatio = 1f
+    private var exposureIndex = 0
     @Volatile
     private var running = false
     // Bumped by stop(): a camera opened for an earlier start() gets closed instead of used.
@@ -69,7 +69,7 @@ internal class Camera2RecordSession(
         }
     }
 
-    fun start(profile: Profile, previewView: SurfaceView, encoderSurface: Surface, torch: Boolean, initialZoomRatio: Float) {
+    fun start(profile: Profile, previewView: SurfaceView, encoderSurface: Surface, torch: Boolean, initialZoomRatio: Float, exposureIndex: Int) {
         stop()
         running = true
         openRequested = false
@@ -79,6 +79,7 @@ internal class Camera2RecordSession(
         activeEncoderSurface = encoderSurface
         activePreviewView = previewView
         torchEnabled = torch
+        this.exposureIndex = exposureIndex
         zoomRatio = clampZoomRatio(profile, initialZoomRatio)
         ensureCameraThread()
         val holder = previewView.holder
@@ -121,6 +122,17 @@ internal class Camera2RecordSession(
         }.getOrDefault(false)
     }
 
+    fun setExposureCompensation(index: Int): Boolean {
+        exposureIndex = index
+        val session = captureSession ?: return false
+        val handler = cameraHandler ?: return false
+        val request = buildRequest(afTriggerStart = false) ?: return false
+        return runCatching {
+            session.setRepeatingRequest(request, captureCallback, handler)
+            true
+        }.getOrDefault(false)
+    }
+    /** [normX]/[normY] are sensor coordinates (0..1), see MeteringMath.displayToSensor. */
     fun focusAt(normX: Float, normY: Float): Boolean {
         focusNormX = normX.coerceIn(0f, 1f)
         focusNormY = normY.coerceIn(0f, 1f)
@@ -284,13 +296,14 @@ internal class Camera2RecordSession(
             set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
             set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
             set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, profile.fpsRange)
+            set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, exposureIndex)
             set(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_AUTO)
             set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
             if (torchEnabled) {
                 set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_TORCH)
             }
 
-            val afRegions = meteringRectangles(profile.characteristics, focusNormX, focusNormY)
+            val afRegions = MeteringMath.meteringRegion(profile.characteristics, profile.size, focusNormX, focusNormY)
             if (focusLockEnabled && afRegions != null) {
                 set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_AUTO)
                 set(CaptureRequest.CONTROL_AF_REGIONS, afRegions)
@@ -316,18 +329,6 @@ internal class Camera2RecordSession(
         return requestedZoomRatio.coerceIn(range.lower, range.upper)
     }
 
-    private fun meteringRectangles(chars: CameraCharacteristics, normX: Float, normY: Float): Array<MeteringRectangle>? {
-        val maxAf = chars.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AF) ?: 0
-        if (maxAf <= 0) return null
-        val active = chars.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE) ?: return null
-        val x = active.left + (active.width() * normX).toInt()
-        val y = active.top + (active.height() * normY).toInt()
-        val boxW = (active.width() * 0.15f).toInt().coerceAtLeast(80)
-        val boxH = (active.height() * 0.15f).toInt().coerceAtLeast(80)
-        val left = (x - boxW / 2).coerceIn(active.left, active.right - boxW)
-        val top = (y - boxH / 2).coerceIn(active.top, active.bottom - boxH)
-        return arrayOf(MeteringRectangle(left, top, boxW, boxH, MeteringRectangle.METERING_WEIGHT_MAX))
-    }
 
     companion object {
         private const val MAX_OPEN_RETRIES = 3

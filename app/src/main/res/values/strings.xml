@@ -1,26 +1,48 @@
 <resources>
     <string name="app_name">Precorder-One</string>
-    <string name="status_idle">Bereit</string>
-    <string name="status_recording">Loop-Aufnahme läuft</string>
-    <string name="status_recording_ready">Loop-Aufnahme läuft (Puffer voll)</string>
-    <string name="status_buffering">Loop-Aufnahme läuft (Puffer %1$d%%)</string>
-    <string name="status_saving">Speichere MP4…</string>
-    <string name="trigger_button">Trigger (Start/Save)</string>
-    <string name="settings_button">Konfiguration</string>
-    <string name="saved_success">Video gespeichert: %1$s</string>
+    <!-- Hauptansicht -->
+    <string name="status_starting">START</string>
+    <string name="status_buffering">PUFFER %1$d %%</string>
+    <string name="status_ready">BEREIT · %1$d s</string>
+    <string name="status_saving">SPEICHERT …</string>
+    <string name="profile_realtime">%1$d fps · Echtzeit · %2$s</string>
+    <string name="profile_slowmo">%1$d fps · %2$s× Zeitlupe · %3$s</string>
+    <string name="trigger_button">Clip speichern</string>
+    <string name="settings_button">Einstellungen</string>
+    <string name="torch_button">Kameralicht</string>
+    <string name="exposure_button">Belichtung</string>
+    <string name="switch_camera_button">Kamera wechseln</string>
+    <string name="last_clip_button">Letzten Clip öffnen</string>
+    <string name="saved_success">Clip gespeichert</string>
+    <string name="saved_open">Ansehen</string>
     <string name="saved_failed">Speichern fehlgeschlagen</string>
+    <string name="no_video_player">Keine App zum Abspielen gefunden</string>
+    <string name="camera_permission_required">Ohne Kamera-Berechtigung kann Precorder-One nicht aufnehmen.</string>
     <string name="focus_failed">Fokus aktuell nicht verfügbar</string>
+    <string name="focus_locked_chip">Fokus fixiert  ✕</string>
+    <string name="focus_auto_button">Autofokus wieder aktivieren</string>
+    <string name="exposure_zero">±0 EV</string>
+    <string name="exposure_value">%1$+.1f EV</string>
+    <string name="zoom_set_failed">Zoom aktuell nicht verfügbar</string>
     <string name="debug_fps_initial">FPS: --.-</string>
-    <string name="debug_fps">Src: %1$.1f | Q: %2$.1f | Enc: %3$.1f | Drop: %4$.0f%% | Ziel: %5$d</string>
+    <string name="debug_fps">Src %1$.1f | Q %2$.1f | Enc %3$.1f | Drop %4$.0f%% | Ziel %5$d</string>
     <string name="debug_pipeline">%1$s · Kamera %2$s</string>
     <string name="debug_physical_camera"> · Objektiv-ID %1$s</string>
     <string name="pipeline_highspeed">High-Speed</string>
     <string name="pipeline_camera2">Camera2</string>
     <string name="pipeline_camerax">CameraX-Ersatzpfad</string>
-    <string name="exposure_initial">Belichtung: --%</string>
-    <string name="exposure_label">Belichtung: %1$d%%</string>
-    <string name="focus_auto_button">Autofokus wieder aktivieren</string>
-    <string name="zoom_set_failed">Zoom aktuell nicht verfügbar</string>
+
+    <!-- Einstellungen -->
+    <string name="settings_title">Einstellungen</string>
+    <string name="settings_back">Zurück</string>
+    <string name="pref_category_recording">Aufnahme</string>
+    <string name="pref_category_camera">Kamera</string>
+    <string name="pref_category_storage">Speichern</string>
+    <string name="pref_category_controls">Bedienung</string>
+    <string name="pref_storage_default">Interner Speicher/DCIM/Precorder-One</string>
+    <string name="pref_storage_internal">Interner Speicher</string>
+    <string name="pref_diagnostics_title">Diagnose anzeigen</string>
+    <string name="pref_diagnostics_summary">FPS, Aufnahmepfad und aktives Objektiv in der Hauptansicht</string>
     <string name="lens_button_description">Objektiv %1$s</string>
 
     <!-- App-Update (GitHub-Releases) -->

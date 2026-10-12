@@ -4,6 +4,7 @@ import android.content.Context
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.os.Bundle
+import android.provider.DocumentsContract
 import android.util.Range
 import android.view.View
 import androidx.activity.result.contract.ActivityResultContracts
@@ -16,6 +17,7 @@ import androidx.preference.ListPreference
 import androidx.preference.Preference
 import androidx.preference.PreferenceFragmentCompat
 import com.precorderone.R
+import com.precorderone.camera.LensCatalog
 import com.precorderone.update.AppUpdater
 import com.precorderone.update.UpdateDialog
 import kotlinx.coroutines.launch
@@ -28,8 +30,18 @@ class SettingsFragment : PreferenceFragmentCompat() {
             uri,
             android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION
         )
-        findPreference<Preference>(KEY_OUTPUT_URI)?.summary = uri.toString()
+        findPreference<Preference>(KEY_OUTPUT_URI)?.summary = readableFolder(uri.toString())
         preferenceManager.sharedPreferences?.edit()?.putString(KEY_OUTPUT_URI, uri.toString())?.apply()
+    }
+
+    /** "content://…/tree/primary%3ADCIM%2FClips" → "Interner Speicher/DCIM/Clips". */
+    private fun readableFolder(uri: String?): String {
+        if (uri.isNullOrBlank()) return getString(R.string.pref_storage_default)
+        val documentId = runCatching { DocumentsContract.getTreeDocumentId(uri.toUri()) }.getOrNull() ?: return uri
+        val volume = documentId.substringBefore(':')
+        val path = documentId.substringAfter(':', "")
+        val volumeName = if (volume == "primary") getString(R.string.pref_storage_internal) else volume
+        return if (path.isEmpty()) volumeName else "$volumeName/$path"
     }
 
     override fun onCreatePreferences(savedInstanceState: Bundle?, rootKey: String?) {
@@ -66,7 +78,7 @@ class SettingsFragment : PreferenceFragmentCompat() {
     private fun setupStoragePreference() {
         val storagePref = findPreference<Preference>(KEY_OUTPUT_URI)
         val current = preferenceManager.sharedPreferences?.getString(KEY_OUTPUT_URI, null)
-        storagePref?.summary = current ?: "DCIM/Precorder-One"
+        storagePref?.summary = readableFolder(current)
         storagePref?.setOnPreferenceClickListener {
             openFolder.launch(current?.toUri())
             true
@@ -111,20 +123,22 @@ class SettingsFragment : PreferenceFragmentCompat() {
             val desiredLens = selectedLensFacing()
             val ids = manager.cameraIdList.toList()
 
-            val labels = ids.mapIndexed { index, id ->
+            // Named like the system camera ("Rückkamera 0.6x"), with what the module can record.
+            val labels = ids.map { id ->
                 val chars = manager.getCameraCharacteristics(id)
-                val focal = chars.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)?.firstOrNull()
-                val focalLabel = focal?.let { String.format("%.1fmm", it) } ?: "?mm"
                 val appMaxFps = collectAppSupportedFps(chars).maxOrNull() ?: 30
                 val highSpeedMaxFps = collectHighSpeedFps(chars).maxOrNull()
                 val lensName = when (chars.get(CameraCharacteristics.LENS_FACING)) {
-                    CameraCharacteristics.LENS_FACING_FRONT -> "Front"
-                    CameraCharacteristics.LENS_FACING_BACK -> "Back"
-                    CameraCharacteristics.LENS_FACING_EXTERNAL -> "External"
-                    else -> "Unknown"
+                    CameraCharacteristics.LENS_FACING_FRONT -> "Frontkamera"
+                    CameraCharacteristics.LENS_FACING_BACK -> "Rückkamera"
+                    CameraCharacteristics.LENS_FACING_EXTERNAL -> "Externe Kamera"
+                    else -> "Kamera"
                 }
-                val hsLabel = highSpeedMaxFps?.let { ", HS bis $it fps" } ?: ""
-                "$lensName ${index + 1} (ID $id, $focalLabel, App bis $appMaxFps fps$hsLabel)"
+                val factor = runCatching {
+                    LensCatalog.lenses(manager, id, zoomRatioLenses = false).current(id, 1f)?.label
+                }.getOrNull()
+                val hsLabel = highSpeedMaxFps?.let { " · High-Speed $it fps" } ?: ""
+                "$lensName ${factor ?: ""} · bis $appMaxFps fps$hsLabel (ID $id)".replace("  ", " ")
             }
 
             cameraPref.entries = labels.toTypedArray()

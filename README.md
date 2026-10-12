@@ -35,6 +35,8 @@ Keep the keystore and `key.properties` backed up. Without the same key, installe
 
 - Primary live pipeline (all regular FPS) must use Camera2 surface-to-surface capture:
   - Camera -> Preview Surface + MediaCodec input Surface -> encoded ring buffer
+- The encoded ring buffer (`EncodedFrameRingBuffer`) is one shared-memory block with a write pointer and a read lease
+  for exports; each frame is copied exactly once (encoder output -> ring). Exports read from the ring without copying.
 - Do not reintroduce `ImageAnalysis` + YUV copy on the live path.
 - CameraX + `ImageAnalysis` is fallback-only for device compatibility/errors, not the default capture path.
 - Any future feature (zoom, filters, overlays, analysis) must not add per-frame CPU pixel copies to the live capture loop.

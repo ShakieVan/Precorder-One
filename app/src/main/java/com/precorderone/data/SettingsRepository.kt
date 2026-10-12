@@ -21,6 +21,9 @@ class SettingsRepository(context: Context) {
         aspectRatio = prefs.getString(KEY_ASPECT_RATIO, "16:9") ?: "16:9"
     )
 
+    /** UI-only option, kept out of [PrecorderSettings] so toggling it never restarts the camera. */
+    fun showDiagnostics(): Boolean = prefs.getBoolean(KEY_SHOW_DIAGNOSTICS, false)
+
     fun save(settings: PrecorderSettings) {
         prefs.edit()
             .putString(KEY_LOOP_SECONDS, settings.loopSeconds.toString())
@@ -45,5 +48,6 @@ class SettingsRepository(context: Context) {
         const val KEY_TORCH = "torch"
         const val KEY_VOLUME_TRIGGER = "volume_trigger"
         const val KEY_ASPECT_RATIO = "aspect_ratio"
+        const val KEY_SHOW_DIAGNOSTICS = "show_diagnostics"
     }
 }

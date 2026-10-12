@@ -1,11 +1,19 @@
 package com.precorderone
 
 import android.Manifest
+import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.res.ColorStateList
+import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.CameraManager
+import android.media.MediaMetadataRetriever
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.util.TypedValue
 import android.view.Gravity
+import android.view.HapticFeedbackConstants
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.OrientationEventListener
@@ -13,13 +21,15 @@ import android.view.Surface
 import android.view.View
 import android.view.ViewConfiguration
 import android.widget.LinearLayout
+import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.camera2.interop.ExperimentalCamera2Interop
+import androidx.camera.core.CameraSelector
 import androidx.core.content.ContextCompat
-import androidx.camera.view.PreviewView
+import androidx.core.widget.TextViewCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
@@ -32,8 +42,11 @@ import com.precorderone.databinding.ActivityMainBinding
 import com.precorderone.ui.SettingsActivity
 import com.precorderone.update.AppUpdater
 import com.precorderone.update.UpdateDialog
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.math.abs
+import kotlin.math.roundToInt
 
 @ExperimentalCamera2Interop
 class MainActivity : AppCompatActivity() {
@@ -46,12 +59,12 @@ class MainActivity : AppCompatActivity() {
     private var isSaving = false
     private var bufferFill = 0f
     private var currentPhysicalRotation = Surface.ROTATION_0
+    private var iconRotation = 0f
     private var sourceFps = 0f
     private var queuedFps = 0f
     private var encodedFps = 0f
     private var dropRate = 0f
     private var triggerArmed = false
-    private var exposurePercent = 55
     private var hasActiveBinding = false
     private var lastBoundSettings: PrecorderSettings? = null
     private var touchStartX = 0f
@@ -63,12 +76,17 @@ class MainActivity : AppCompatActivity() {
     private var lensOptions: List<LensOption> = emptyList()
     private var currentLens: LensOption? = null
     private var activePhysicalCamera: String? = null
+    private var lastClipUri: Uri? = null
+    private var showDiagnostics = false
 
     private val permissionsLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
-        val granted = permissions.values.all { it }
-        if (granted) bindCamera() else Toast.makeText(this, "Kamera-Berechtigung erforderlich", Toast.LENGTH_LONG).show()
+        if (permissions.values.all { it }) {
+            bindCamera()
+        } else {
+            Toast.makeText(this, R.string.camera_permission_required, Toast.LENGTH_LONG).show()
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -79,6 +97,45 @@ class MainActivity : AppCompatActivity() {
 
         settingsRepository = SettingsRepository(this)
         engine = PrecorderEngine(this)
+        setupEngineCallbacks()
+        setupControls()
+
+        // The UI stays in portrait; like the system camera, only the icons turn upright with the device.
+        orientationListener = object : OrientationEventListener(this) {
+            override fun onOrientationChanged(orientation: Int) {
+                if (orientation == ORIENTATION_UNKNOWN) return
+                val rotation = mapDegreesToSurfaceRotation(orientation)
+                if (rotation == currentPhysicalRotation) return
+                currentPhysicalRotation = rotation
+                rotateIcons(rotation)
+            }
+        }
+
+        updateFocusUi()
+        updateZoomUi(rebuild = true)
+        updateBufferUi()
+        setupUpdateHint()
+        requestPermissionsIfNeeded()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (orientationListener.canDetectOrientation()) orientationListener.enable()
+        if (hasPermissions()) bindCamera()
+    }
+
+    override fun onPause() {
+        super.onPause()
+        orientationListener.disable()
+        if (hasActiveBinding) {
+            engine.pauseSession()
+            hasActiveBinding = false
+        }
+        focusLocked = false
+        updateFocusUi()
+    }
+
+    private fun setupEngineCallbacks() {
         engine.onBufferFillChanged = { progress ->
             runOnUiThread {
                 bufferFill = progress
@@ -100,9 +157,7 @@ class MainActivity : AppCompatActivity() {
                 updateBufferUi()
             }
         }
-        engine.onProfileFallback = { msg ->
-            runOnUiThread { Toast.makeText(this, msg, Toast.LENGTH_LONG).show() }
-        }
+        engine.onProfileFallback = { msg -> runOnUiThread { showMessage(msg) } }
         // Shown in the diagnostics line instead of a toast: toasts sit right on top of the lens bar.
         engine.onPipelineChanged = { pipeline, cameraId ->
             runOnUiThread {
@@ -131,57 +186,55 @@ class MainActivity : AppCompatActivity() {
                 updateZoomUi(rebuild)
             }
         }
-
-        exposurePercent = engine.getManualExposurePercent()
-        binding.exposureSlider.max = 80
-        binding.exposureSlider.progress = exposurePercent - 20
-        binding.exposureSlider.setOnSeekBarChangeListener(object : android.widget.SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(seekBar: android.widget.SeekBar?, progress: Int, fromUser: Boolean) {
-                exposurePercent = progress + 20
-                binding.exposureText.text = getString(R.string.exposure_label, exposurePercent)
-                if (!fromUser) engine.setManualExposurePercent(exposurePercent)
-            }
-
-            override fun onStartTrackingTouch(seekBar: android.widget.SeekBar?) = Unit
-
-            override fun onStopTrackingTouch(seekBar: android.widget.SeekBar?) {
-                engine.setManualExposurePercent(exposurePercent)
-            }
-        })
-        binding.exposureText.text = getString(R.string.exposure_label, exposurePercent)
-
-        orientationListener = object : OrientationEventListener(this) {
-            override fun onOrientationChanged(orientation: Int) {
-                if (orientation == ORIENTATION_UNKNOWN) return
-                currentPhysicalRotation = mapDegreesToSurfaceRotation(orientation)
-                val indicatorAngle = (surfaceRotationToDegrees(currentPhysicalRotation) + 180f) % 360f
-                binding.orientationIndicatorRing.rotation = indicatorAngle
-            }
+        engine.onPreviewAspectChanged = { aspect ->
+            runOnUiThread { binding.highSpeedPreviewView.setAspectRatio(aspect) }
         }
+    }
 
+    private fun setupControls() {
         binding.btnTrigger.setOnClickListener { onTrigger() }
+        binding.btnSettings.setOnClickListener { startActivity(Intent(this, SettingsActivity::class.java)) }
+        binding.btnTorch.setOnClickListener { toggleTorch() }
+        binding.btnSwitchCamera.setOnClickListener { switchFacing() }
+        binding.lastClipThumb.setOnClickListener { openLastClip() }
         binding.btnFocusAuto.setOnClickListener {
-            val unlocked = engine.clearFocusLock()
-            if (!unlocked) {
+            if (!engine.clearFocusLock()) {
                 Toast.makeText(this, R.string.focus_failed, Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
             focusLocked = false
             updateFocusUi()
         }
-        binding.btnSettings.setOnClickListener { startActivity(Intent(this, SettingsActivity::class.java)) }
-        binding.previewView.setOnTouchListener { _, event -> handlePreviewTouch(event, allowTapFocus = true, highSpeedPreview = false) }
-        binding.highSpeedPreviewView.setOnTouchListener { _, event -> handlePreviewTouch(event, allowTapFocus = true, highSpeedPreview = true) }
-        binding.previewView.previewStreamState.observe(this) { state ->
-            if (state == PreviewView.StreamState.STREAMING) {
-                engine.setManualExposurePercent(exposurePercent)
-            }
-        }
-        updateFocusUi()
-        updateZoomUi(rebuild = true)
-        setupUpdateHint()
 
-        requestPermissionsIfNeeded()
+        binding.btnExposure.setOnClickListener {
+            val panel = binding.exposurePanel
+            panel.visibility = if (panel.visibility == View.VISIBLE) View.GONE else View.VISIBLE
+        }
+        // Long press resets the compensation, so a forgotten offset is one gesture away from neutral.
+        binding.btnExposure.setOnLongClickListener {
+            binding.exposureSlider.progress = EXPOSURE_STEPS_PER_SIDE
+            applyExposure(EXPOSURE_STEPS_PER_SIDE)
+            true
+        }
+        binding.exposureSlider.max = EXPOSURE_STEPS_PER_SIDE * 2
+        binding.exposureSlider.progress = (engine.getExposureEv() * EXPOSURE_STEPS_PER_EV).roundToInt() + EXPOSURE_STEPS_PER_SIDE
+        binding.exposureSlider.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                if (fromUser) applyExposure(progress)
+            }
+
+            override fun onStartTrackingTouch(seekBar: SeekBar?) = Unit
+            override fun onStopTrackingTouch(seekBar: SeekBar?) = Unit
+        })
+
+        binding.previewView.setOnTouchListener { view, event -> handlePreviewTouch(view, event, highSpeedPreview = false) }
+        binding.highSpeedPreviewView.setOnTouchListener { view, event -> handlePreviewTouch(view, event, highSpeedPreview = true) }
+    }
+
+    private fun applyExposure(progress: Int) {
+        val ev = (progress - EXPOSURE_STEPS_PER_SIDE).toFloat() / EXPOSURE_STEPS_PER_EV
+        val applied = engine.setExposureEv(ev)
+        binding.exposureText.text = if (abs(applied) < 0.05f) getString(R.string.exposure_zero) else getString(R.string.exposure_value, applied)
     }
 
     private fun setupUpdateHint() {
@@ -197,30 +250,12 @@ class MainActivity : AppCompatActivity() {
                     } ?: return@collect
                     if (AppUpdater.announcedVersion == release.version) return@collect
                     AppUpdater.announcedVersion = release.version
-                    Snackbar.make(binding.root, getString(R.string.update_snackbar, release.version), Snackbar.LENGTH_LONG)
-                        .setAnchorView(binding.orientationIndicatorRing)
-                        .setAction(R.string.update_snackbar_action) { UpdateDialog.show(this@MainActivity) }
-                        .show()
+                    showMessage(getString(R.string.update_snackbar, release.version), R.string.update_snackbar_action) {
+                        UpdateDialog.show(this@MainActivity)
+                    }
                 }
             }
         }
-    }
-
-    override fun onResume() {
-        super.onResume()
-        if (orientationListener.canDetectOrientation()) orientationListener.enable()
-        if (hasPermissions()) bindCamera()
-    }
-
-    override fun onPause() {
-        super.onPause()
-        orientationListener.disable()
-        if (hasActiveBinding) {
-            engine.pauseSession()
-            hasActiveBinding = false
-        }
-        focusLocked = false
-        updateFocusUi()
     }
 
     private fun requestPermissionsIfNeeded() {
@@ -232,6 +267,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun bindCamera(zoomRatio: Float? = null) {
         val settings = settingsRepository.load()
+        showDiagnostics = settingsRepository.showDiagnostics()
+        binding.debugFpsText.visibility = if (showDiagnostics) View.VISIBLE else View.GONE
         if (hasActiveBinding && settings == lastBoundSettings) {
             return
         }
@@ -246,8 +283,17 @@ class MainActivity : AppCompatActivity() {
         isSaving = false
         triggerArmed = false
         focusLocked = false
+        updateTorchIcon(settings.torchEnabled)
+        updateProfileChip(settings)
         updateFocusUi()
         updateBufferUi()
+    }
+
+    /** Reopens the camera after the stored camera ID changed (lens bar, front/back switch). */
+    private fun restartCamera(zoomRatio: Float) {
+        engine.pauseSession()
+        hasActiveBinding = false
+        bindCamera(zoomRatio)
     }
 
     private fun onLensSelected(option: LensOption) {
@@ -260,61 +306,104 @@ class MainActivity : AppCompatActivity() {
         }
         // Lens is its own camera ID: store it like the settings screen does, then reopen with that camera.
         settingsRepository.save(settingsRepository.load().copy(cameraId = option.cameraId))
-        engine.pauseSession()
-        hasActiveBinding = false
-        bindCamera(zoomRatio = option.zoomRatio)
+        restartCamera(option.zoomRatio)
     }
 
-    private fun handlePreviewTouch(
-        event: MotionEvent,
-        allowTapFocus: Boolean,
-        highSpeedPreview: Boolean
-    ): Boolean {
+    private fun switchFacing() {
+        if (isSaving) return
+        val settings = settingsRepository.load()
+        val toFront = settings.lensFacing != CameraSelector.LENS_FACING_FRONT
+        val wanted = if (toFront) CameraCharacteristics.LENS_FACING_FRONT else CameraCharacteristics.LENS_FACING_BACK
+        val manager = getSystemService(CAMERA_SERVICE) as CameraManager
+        val cameraId = manager.cameraIdList.firstOrNull { id ->
+            runCatching { manager.getCameraCharacteristics(id).get(CameraCharacteristics.LENS_FACING) == wanted }.getOrDefault(false)
+        } ?: return
+        val facing = if (toFront) CameraSelector.LENS_FACING_FRONT else CameraSelector.LENS_FACING_BACK
+        settingsRepository.save(settings.copy(lensFacing = facing, cameraId = cameraId))
+        binding.btnSwitchCamera.animate().rotationBy(180f).setDuration(250).start()
+        restartCamera(zoomRatio = 1f)
+    }
+
+    private fun toggleTorch() {
+        val settings = settingsRepository.load()
+        val enabled = !settings.torchEnabled
+        settingsRepository.save(settings.copy(torchEnabled = enabled))
+        lastBoundSettings = lastBoundSettings?.copy(torchEnabled = enabled)
+        engine.toggleTorch(enabled)
+        updateTorchIcon(enabled)
+    }
+
+    private fun updateTorchIcon(enabled: Boolean) {
+        binding.btnTorch.setImageResource(if (enabled) R.drawable.ic_flash_on else R.drawable.ic_flash_off)
+    }
+
+    private fun updateProfileChip(settings: PrecorderSettings) {
+        val factor = settings.targetFps.toFloat() / settings.playbackFps.coerceAtLeast(1)
+        binding.profileChip.text = if (factor <= 1.01f) {
+            getString(R.string.profile_realtime, settings.targetFps, settings.aspectRatio)
+        } else {
+            val factorText = if (abs(factor - factor.roundToInt()) < 0.05f) "${factor.roundToInt()}" else String.format("%.1f", factor)
+            getString(R.string.profile_slowmo, settings.targetFps, factorText, settings.aspectRatio)
+        }
+    }
+
+    private fun handlePreviewTouch(view: View, event: MotionEvent, highSpeedPreview: Boolean): Boolean {
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 touchStartX = event.x
                 touchStartY = event.y
                 touchMoved = false
-                return true
             }
             MotionEvent.ACTION_MOVE -> {
                 if (abs(event.x - touchStartX) > touchSlopPx || abs(event.y - touchStartY) > touchSlopPx) {
                     touchMoved = true
                 }
-                return true
             }
             MotionEvent.ACTION_UP -> {
-                if (allowTapFocus && !touchMoved) {
-                    val focused = if (highSpeedPreview && binding.highSpeedPreviewView.visibility == View.VISIBLE) {
-                        val width = binding.highSpeedPreviewView.width.coerceAtLeast(1)
-                        val height = binding.highSpeedPreviewView.height.coerceAtLeast(1)
-                        engine.focusAtHighSpeed(event.x / width.toFloat(), event.y / height.toFloat())
-                    } else if (!highSpeedPreview && binding.previewView.visibility == View.VISIBLE) {
-                        engine.focusAt(binding.previewView, event.x, event.y)
-                    } else {
-                        false
+                if (!touchMoved) {
+                    val focused = when {
+                        highSpeedPreview && view.visibility == View.VISIBLE -> engine.focusAtPreview(
+                            event.x / view.width.coerceAtLeast(1),
+                            event.y / view.height.coerceAtLeast(1)
+                        )
+                        !highSpeedPreview && view.visibility == View.VISIBLE -> engine.focusAt(binding.previewView, event.x, event.y)
+                        else -> false
                     }
-                    if (!focused) {
-                        Toast.makeText(this, R.string.focus_failed, Toast.LENGTH_SHORT).show()
-                    } else {
+                    if (focused) {
                         focusLocked = true
+                        showFocusRing(view, event.x, event.y)
+                    } else {
+                        Toast.makeText(this, R.string.focus_failed, Toast.LENGTH_SHORT).show()
                     }
                     updateFocusUi()
                 }
                 touchMoved = false
-                return true
             }
-            MotionEvent.ACTION_CANCEL -> {
-                touchMoved = false
-                return true
-            }
+            MotionEvent.ACTION_CANCEL -> touchMoved = false
         }
         return true
     }
 
+    private fun showFocusRing(preview: View, x: Float, y: Float) {
+        val ring = binding.focusRing
+        ring.animate().cancel()
+        ring.translationX = preview.left + x - ring.width / 2f
+        ring.translationY = preview.top + y - ring.height / 2f
+        ring.alpha = 1f
+        ring.scaleX = 1.4f
+        ring.scaleY = 1.4f
+        ring.visibility = View.VISIBLE
+        ring.animate().scaleX(1f).scaleY(1f).setDuration(180).withEndAction {
+            ring.animate().alpha(0.5f).setStartDelay(900).setDuration(300).start()
+        }.start()
+    }
+
     private fun updateFocusUi() {
-        val canShow = focusLocked && (binding.previewView.visibility == View.VISIBLE || binding.highSpeedPreviewView.visibility == View.VISIBLE)
-        binding.btnFocusAuto.visibility = if (canShow) View.VISIBLE else View.GONE
+        binding.btnFocusAuto.visibility = if (focusLocked) View.VISIBLE else View.GONE
+        if (!focusLocked) {
+            binding.focusRing.animate().cancel()
+            binding.focusRing.visibility = View.INVISIBLE
+        }
     }
 
     /** One button per native lens; a single lens needs no bar. */
@@ -330,73 +419,133 @@ class MainActivity : AppCompatActivity() {
                     gravity = Gravity.CENTER
                     includeFontPadding = false
                     setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+                    typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
                     isClickable = true
                     isFocusable = true
+                    rotation = iconRotation
                     setOnClickListener { onLensSelected(option) }
                 }
-                val params = LinearLayout.LayoutParams((58 * density).toInt(), (38 * density).toInt())
+                val params = LinearLayout.LayoutParams((48 * density).toInt(), (36 * density).toInt())
                 if (index > 0) params.marginStart = (4 * density).toInt()
                 container.addView(button, params)
             }
         }
-        container.visibility = if (lensOptions.size > 1) View.VISIBLE else View.GONE
+        container.visibility = if (lensOptions.size > 1) View.VISIBLE else View.INVISIBLE
         lensOptions.forEachIndexed { index, option ->
             (container.getChildAt(index) as? TextView)?.let { setZoomButtonState(it, option == currentLens) }
         }
     }
 
     private fun setZoomButtonState(button: TextView, selected: Boolean) {
-        button.alpha = if (selected) 1f else 0.65f
-        button.setBackgroundResource(
-            if (selected) R.drawable.bg_zoom_button_selected else R.drawable.bg_zoom_button_idle
-        )
-        button.setTextColor(
-            ContextCompat.getColor(
-                this,
-                if (selected) android.R.color.black else android.R.color.white
-            )
-        )
+        button.setBackgroundResource(if (selected) R.drawable.bg_zoom_button_selected else R.drawable.bg_zoom_button_idle)
+        button.setTextColor(ContextCompat.getColor(this, if (selected) android.R.color.black else android.R.color.white))
+    }
+
+    private fun rotateIcons(rotation: Int) {
+        // OrientationEventListener 90 (device turned clockwise) maps to ROTATION_270: turn the icons back by 90°.
+        iconRotation = when (rotation) {
+            Surface.ROTATION_270 -> -90f
+            Surface.ROTATION_90 -> 90f
+            Surface.ROTATION_180 -> 180f
+            else -> 0f
+        }
+        val zoomButtons = (0 until binding.zoomControlsContainer.childCount).map { binding.zoomControlsContainer.getChildAt(it) }
+        (listOf(binding.btnSettings, binding.btnTorch, binding.btnExposure, binding.btnSwitchCamera, binding.lastClipThumb) + zoomButtons)
+            .forEach { it.animate().rotation(iconRotation).setDuration(250).start() }
     }
 
     private fun onTrigger() {
-        val settings = settingsRepository.load()
         if (!isRecordingLoop || isSaving) return
-
+        val settings = settingsRepository.load()
         isSaving = true
+        binding.btnTrigger.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+        binding.btnTrigger.animate().scaleX(0.86f).scaleY(0.86f).setDuration(90).withEndAction {
+            binding.btnTrigger.animate().scaleX(1f).scaleY(1f).setDuration(140).start()
+        }.start()
         updateBufferUi()
 
         engine.exportClip(settings, currentPhysicalRotation) { uri ->
             runOnUiThread {
                 isSaving = false
-                if (uri != null) {
-                    Toast.makeText(this, getString(R.string.saved_success, uri.toString()), Toast.LENGTH_LONG).show()
-                } else {
-                    Toast.makeText(this, R.string.saved_failed, Toast.LENGTH_LONG).show()
-                }
+                if (uri != null) onClipSaved(uri) else showMessage(getString(R.string.saved_failed))
                 updateBufferUi()
             }
         }
     }
 
+    private fun onClipSaved(uri: Uri) {
+        lastClipUri = uri
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            binding.btnTrigger.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
+        }
+        showMessage(getString(R.string.saved_success), R.string.saved_open) { openLastClip() }
+        lifecycleScope.launch {
+            val thumbnail = withContext(Dispatchers.IO) {
+                runCatching {
+                    val retriever = MediaMetadataRetriever()
+                    try {
+                        retriever.setDataSource(this@MainActivity, uri)
+                        retriever.getScaledFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC, 192, 192)
+                    } finally {
+                        retriever.release()
+                    }
+                }.getOrNull()
+            } ?: return@launch
+            binding.lastClipThumb.setImageBitmap(thumbnail)
+            binding.lastClipThumb.visibility = View.VISIBLE
+        }
+    }
+
+    private fun openLastClip() {
+        val uri = lastClipUri ?: return
+        val intent = Intent(Intent.ACTION_VIEW)
+            .setDataAndType(uri, "video/mp4")
+            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        try {
+            startActivity(intent)
+        } catch (e: ActivityNotFoundException) {
+            Toast.makeText(this, R.string.no_video_player, Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun showMessage(text: CharSequence, actionLabel: Int? = null, action: (() -> Unit)? = null) {
+        Snackbar.make(binding.root, text, Snackbar.LENGTH_LONG)
+            .setAnchorView(binding.bottomBar)
+            .apply { if (actionLabel != null && action != null) setAction(actionLabel) { action() } }
+            .show()
+    }
+
     private fun updateBufferUi() {
-        binding.bufferProgress.progress = (bufferFill * 100).toInt().coerceIn(0, 100)
+        val percent = (bufferFill * 100).toInt().coerceIn(0, 100)
         if (bufferFill >= 0.98f) triggerArmed = true
         if (bufferFill < 0.90f) triggerArmed = false
-        val ready = triggerArmed
+
+        val color = ContextCompat.getColor(
+            this,
+            when {
+                isSaving -> R.color.brand_red
+                triggerArmed -> R.color.ready_green
+                else -> R.color.buffer_amber
+            }
+        )
+        binding.bufferRing.setProgressCompat(percent, false)
+        binding.bufferRing.setIndicatorColor(color)
         binding.btnTrigger.isEnabled = !isSaving
-        binding.btnTrigger.alpha = if (!isSaving) 1f else 0.4f
-
-        val target = lastBoundSettings?.targetFps ?: 0
-        val fpsText = getString(R.string.debug_fps, sourceFps, queuedFps, encodedFps, dropRate, target)
-        val cameraLine = pipelineInfo?.let { info ->
-            info + (activePhysicalCamera?.let { getString(R.string.debug_physical_camera, it) } ?: "")
-        }
-        binding.debugFpsText.text = if (cameraLine != null) "$fpsText\n$cameraLine" else fpsText
-
-        binding.statusText.text = when {
+        binding.btnTrigger.alpha = if (isSaving) 0.6f else 1f
+        binding.statusChip.text = when {
             isSaving -> getString(R.string.status_saving)
-            ready -> getString(R.string.status_recording_ready)
-            else -> getString(R.string.status_buffering, (bufferFill * 100).toInt().coerceIn(0, 100))
+            triggerArmed -> getString(R.string.status_ready, lastBoundSettings?.loopSeconds ?: 0)
+            else -> getString(R.string.status_buffering, percent)
+        }
+        TextViewCompat.setCompoundDrawableTintList(binding.statusChip, ColorStateList.valueOf(color))
+
+        if (showDiagnostics) {
+            val target = lastBoundSettings?.targetFps ?: 0
+            val fpsText = getString(R.string.debug_fps, sourceFps, queuedFps, encodedFps, dropRate, target)
+            val cameraLine = pipelineInfo?.let { info ->
+                info + (activePhysicalCamera?.let { getString(R.string.debug_physical_camera, it) } ?: "")
+            }
+            binding.debugFpsText.text = if (cameraLine != null) "$fpsText\n$cameraLine" else fpsText
         }
     }
 
@@ -405,13 +554,6 @@ class MainActivity : AppCompatActivity() {
         orientation in 135..224 -> Surface.ROTATION_180
         orientation in 225..314 -> Surface.ROTATION_90
         else -> Surface.ROTATION_0
-    }
-
-    private fun surfaceRotationToDegrees(rotation: Int): Int = when (rotation) {
-        Surface.ROTATION_90 -> 90
-        Surface.ROTATION_180 -> 180
-        Surface.ROTATION_270 -> 270
-        else -> 0
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
@@ -433,5 +575,9 @@ class MainActivity : AppCompatActivity() {
         private val REQUIRED_PERMISSIONS = arrayOf(
             Manifest.permission.CAMERA
         )
+
+        // Exposure slider: ±2 EV in thirds, the usual camera granularity.
+        private const val EXPOSURE_STEPS_PER_EV = 3
+        private const val EXPOSURE_STEPS_PER_SIDE = 2 * EXPOSURE_STEPS_PER_EV
     }
 }

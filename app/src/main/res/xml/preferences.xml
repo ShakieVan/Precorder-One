@@ -1,77 +1,113 @@
 <?xml version="1.0" encoding="utf-8"?>
-<PreferenceScreen xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:app="http://schemas.android.com/apk/res-auto">
+<PreferenceScreen xmlns:app="http://schemas.android.com/apk/res-auto">
 
-    <Preference
-        app:key="output_uri"
-        app:title="Speicherort"
-        app:summary="DCIM/Precorder-One" />
+    <PreferenceCategory
+        app:iconSpaceReserved="false"
+        app:title="@string/pref_category_recording">
 
-    <ListPreference
-        app:key="loop_seconds"
-        app:title="Loop-Speicher"
-        app:summary="Wie lange im RAM behalten"
-        app:entries="@array/loop_entries"
-        app:entryValues="@array/loop_values"
-        app:defaultValue="5" />
+        <ListPreference
+            app:defaultValue="5"
+            app:entries="@array/loop_entries"
+            app:entryValues="@array/loop_values"
+            app:iconSpaceReserved="false"
+            app:key="loop_seconds"
+            app:title="Puffer-Länge"
+            app:useSimpleSummaryProvider="true" />
 
-    <ListPreference
-        app:key="aspect_ratio"
-        app:title="Aufnahmeformat"
-        app:summary="Seitenverhältnis von Vorschau und Aufnahme"
-        app:entries="@array/aspect_entries"
-        app:entryValues="@array/aspect_values"
-        app:defaultValue="16:9" />
+        <ListPreference
+            app:defaultValue="60"
+            app:iconSpaceReserved="false"
+            app:key="target_fps"
+            app:title="Aufnahme-Bildrate"
+            app:useSimpleSummaryProvider="true" />
 
-    <ListPreference
-        app:key="target_fps"
-        app:title="Aufnahme-FPS"
-        app:summary="Wird aus den Kamera-FPS-Bereichen befüllt"
-        app:defaultValue="60"
-        app:useSimpleSummaryProvider="true" />
+        <ListPreference
+            app:defaultValue="30"
+            app:entries="@array/playback_entries"
+            app:entryValues="@array/playback_values"
+            app:iconSpaceReserved="false"
+            app:key="playback_fps"
+            app:title="Wiedergabe-Bildrate (Zeitlupe)"
+            app:useSimpleSummaryProvider="true" />
 
-    <ListPreference
-        app:key="playback_fps"
-        app:title="Export-FPS"
-        app:summary="Bildrate in der MP4-Datei"
-        app:entries="@array/playback_entries"
-        app:entryValues="@array/playback_values"
-        app:defaultValue="30"
-        app:useSimpleSummaryProvider="true" />
+        <ListPreference
+            app:defaultValue="16:9"
+            app:entries="@array/aspect_entries"
+            app:entryValues="@array/aspect_values"
+            app:iconSpaceReserved="false"
+            app:key="aspect_ratio"
+            app:title="Seitenverhältnis"
+            app:useSimpleSummaryProvider="true" />
+    </PreferenceCategory>
 
-    <ListPreference
-        app:key="lens_facing"
-        app:title="Kamera"
-        app:entries="@array/lens_entries"
-        app:entryValues="@array/lens_values"
-        app:defaultValue="back" />
+    <PreferenceCategory
+        app:iconSpaceReserved="false"
+        app:title="@string/pref_category_camera">
 
-    <ListPreference
-        app:key="camera_id"
-        app:title="Hardware-Kamera-ID"
-        app:summary="Spezifische Kamera auswählen"
-        app:useSimpleSummaryProvider="true" />
+        <ListPreference
+            app:defaultValue="back"
+            app:entries="@array/lens_entries"
+            app:entryValues="@array/lens_values"
+            app:iconSpaceReserved="false"
+            app:key="lens_facing"
+            app:title="Kamera"
+            app:useSimpleSummaryProvider="true" />
 
-    <SwitchPreferenceCompat
-        app:key="torch"
-        app:title="Kameralicht"
-        app:defaultValue="false" />
+        <ListPreference
+            app:iconSpaceReserved="false"
+            app:key="camera_id"
+            app:title="Kamera-Modul"
+            app:useSimpleSummaryProvider="true" />
 
-    <SwitchPreferenceCompat
-        app:key="volume_trigger"
-        app:title="Vol-Down als Trigger"
-        app:defaultValue="true" />
+        <SwitchPreferenceCompat
+            app:defaultValue="false"
+            app:iconSpaceReserved="false"
+            app:key="torch"
+            app:title="Kameralicht" />
+    </PreferenceCategory>
 
-    <PreferenceCategory app:title="@string/pref_category_app">
+    <PreferenceCategory
+        app:iconSpaceReserved="false"
+        app:title="@string/pref_category_storage">
 
         <Preference
+            app:iconSpaceReserved="false"
+            app:key="output_uri"
+            app:title="Speicherort" />
+    </PreferenceCategory>
+
+    <PreferenceCategory
+        app:iconSpaceReserved="false"
+        app:title="@string/pref_category_controls">
+
+        <SwitchPreferenceCompat
+            app:defaultValue="true"
+            app:iconSpaceReserved="false"
+            app:key="volume_trigger"
+            app:summary="Leiser-Taste speichert einen Clip"
+            app:title="Auslösen mit Lautstärketaste" />
+
+        <SwitchPreferenceCompat
+            app:defaultValue="false"
+            app:iconSpaceReserved="false"
+            app:key="show_diagnostics"
+            app:summary="@string/pref_diagnostics_summary"
+            app:title="@string/pref_diagnostics_title" />
+    </PreferenceCategory>
+
+    <PreferenceCategory
+        app:iconSpaceReserved="false"
+        app:title="@string/pref_category_app">
+
+        <Preference
+            app:iconSpaceReserved="false"
             app:key="app_version"
             app:selectable="false"
             app:title="@string/pref_version_title" />
 
         <Preference
+            app:iconSpaceReserved="false"
             app:key="app_update"
             app:title="@string/pref_update_title" />
     </PreferenceCategory>
-
 </PreferenceScreen>

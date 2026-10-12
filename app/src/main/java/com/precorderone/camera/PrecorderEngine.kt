@@ -64,7 +64,9 @@ class PrecorderEngine(private val context: Context) {
     private var codecInputSurface: Surface? = null
     private var codecUsesSurfaceInput = false
     private var encoderOutputFormat: MediaFormat? = null
-    private var ringBuffer: EncodedFrameRingBuffer = EncodedFrameRingBuffer(5_000_000)
+    // Created with the encoder (size depends on its bitrate); written by the drain thread, read by the export.
+    @Volatile
+    private var ringBuffer: EncodedFrameRingBuffer? = null
     private val analyzerExecutor: ExecutorService = Executors.newSingleThreadExecutor()
     private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -76,9 +78,10 @@ class PrecorderEngine(private val context: Context) {
     var onLensesChanged: ((List<LensOption>, LensOption?) -> Unit)? = null
     /** Physical lens behind a logical multi-camera that delivers frames right now; null when unknown. */
     var onActivePhysicalCameraChanged: ((String?) -> Unit)? = null
+    /** Width / height of the upright preview of the Camera2 pipelines, to size the preview without distortion. */
+    var onPreviewAspectChanged: ((Float) -> Unit)? = null
 
     private var retentionUs: Long = 5_000_000
-    private var currentConfigKey: String? = null
     private var formatWidth = 0
     private var formatHeight = 0
     private var formatReady = false
@@ -106,14 +109,12 @@ class PrecorderEngine(private val context: Context) {
     private var boundPreviewView: PreviewView? = null
     private var boundHighSpeedPreviewView: SurfaceView? = null
     private var boundSettings: PrecorderSettings? = null
-    private var manualExposurePercent: Int = 55
-    private var pendingExposureApply: Boolean = true
-    private var lastExposureApplyMs: Long = 0L
+    // Exposure compensation in EV; kept across rebinds like the zoom and converted to each camera's steps.
+    private var exposureEv = 0f
     private var pendingFpsApply: Boolean = true
     private var lastFpsApplyMs: Long = 0L
     private var reusableYuvBuffer: ByteArray? = null
     private val codecLock = Any()
-    private val bufferLock = Any()
     private var manualSensorModeActive: Boolean = false
     private var unsupportedExactFpsNotified: Int? = null
     private var highSpeedDrainActive = false
@@ -124,17 +125,39 @@ class PrecorderEngine(private val context: Context) {
     @Volatile
     private var activeCameraId: String? = null
     private var lastBufferNotifyMs = 0L
-    fun getManualExposurePercent(): Int = manualExposurePercent
     fun getActiveCameraId(): String? = activeCameraId
     fun getCurrentZoomRatio(): Float = currentZoomRatio
+    fun getExposureEv(): Float = exposureEv
 
-    fun setManualExposurePercent(percent: Int) {
-        manualExposurePercent = percent.coerceIn(20, 100)
-        pendingExposureApply = true
-        val cam = camera ?: return
-        val settings = boundSettings ?: return
-        maybeApplyRuntimeExposureOverride(cam, settings)
+    /**
+     * Exposure compensation via CONTROL_AE_EXPOSURE_COMPENSATION: auto exposure keeps working (also at 120/240 fps),
+     * only its target brightness shifts. Returns the EV actually applied (snapped to the camera's step).
+     */
+    fun setExposureEv(ev: Float): Float {
+        exposureEv = ev
+        val index = exposureIndexFor(activeCameraId, ev)
+        when (activePipeline) {
+            CapturePipeline.CAMERA2_NORMAL -> camera2Session?.setExposureCompensation(index)
+            CapturePipeline.CAMERA2_HIGHSPEED -> highSpeedSession?.setExposureCompensation(index)
+            CapturePipeline.CAMERAX -> camera?.let { runCatching { it.cameraControl.setExposureCompensationIndex(index) } }
+        }
+        return index * exposureStep(activeCameraId)
     }
+
+    private fun exposureStep(cameraId: String?): Float {
+        val chars = cameraId?.let { id -> runCatching { cameraManager().getCameraCharacteristics(id) }.getOrNull() } ?: return 0f
+        return chars.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_STEP)?.toFloat() ?: 0f
+    }
+
+    private fun exposureIndexFor(cameraId: String?, ev: Float): Int {
+        val chars = cameraId?.let { id -> runCatching { cameraManager().getCameraCharacteristics(id) }.getOrNull() } ?: return 0
+        val step = chars.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_STEP)?.toFloat() ?: return 0
+        val range = chars.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE) ?: return 0
+        if (step <= 0f) return 0
+        return Math.round(ev / step).coerceIn(range.lower, range.upper)
+    }
+
+    private fun cameraManager() = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
 
     fun bind(
         owner: LifecycleOwner,
@@ -148,7 +171,6 @@ class PrecorderEngine(private val context: Context) {
         boundPreviewView = previewView
         boundHighSpeedPreviewView = highSpeedPreviewView
         boundSettings = settings
-        pendingExposureApply = true
         pendingFpsApply = true
         unsupportedExactFpsNotified = null
         requestedTorchEnabled = settings.torchEnabled
@@ -158,21 +180,9 @@ class PrecorderEngine(private val context: Context) {
         forceLowProfile = false
 
         retentionUs = (settings.loopSeconds + 1) * 1_000_000L
-        val key = "${settings.cameraId}|${settings.lensFacing}|${settings.targetFps}|${settings.aspectRatio}"
-
-        if (key != currentConfigKey) {
-            resetEncodingState()
-            currentConfigKey = key
-        } else {
-            // Bei erneutem Binden trotzdem Puffer leeren, damit nur konsistente Frames enthalten sind.
-            synchronized(bufferLock) {
-                ringBuffer.clear()
-            }
-            notifyBufferProgress(0f)
-        }
-        synchronized(bufferLock) {
-            ringBuffer = EncodedFrameRingBuffer(retentionUs)
-        }
+        // A new binding always starts with a fresh encoder and buffer: frames of two configurations never mix.
+        stopHighSpeedSession()
+        resetEncodingState()
 
         if (settings.targetFps >= 120) {
             val profile = HighSpeedCamera2Session.chooseProfile(
@@ -288,16 +298,21 @@ class PrecorderEngine(private val context: Context) {
         }.getOrDefault(false)
     }
 
-    fun focusAtHighSpeed(normalizedX: Float, normalizedY: Float): Boolean {
-        if (activePipeline == CapturePipeline.CAMERA2_NORMAL) {
-            return camera2Session?.focusAt(normalizedX, normalizedY) ?: false
+    /** Tap on the Camera2 preview; [displayX]/[displayY] are 0..1 within the upright, letterboxed preview. */
+    fun focusAtPreview(displayX: Float, displayY: Float): Boolean {
+        val chars = activeCameraId?.let { id -> runCatching { cameraManager().getCameraCharacteristics(id) }.getOrNull() }
+            ?: return false
+        val sensor = MeteringMath.displayToSensor(displayX, displayY, chars)
+        return when (activePipeline) {
+            CapturePipeline.CAMERA2_NORMAL -> camera2Session?.focusAt(sensor.x, sensor.y) ?: false
+            CapturePipeline.CAMERA2_HIGHSPEED -> highSpeedSession?.focusAt(sensor.x, sensor.y) ?: false
+            CapturePipeline.CAMERAX -> false
         }
-        if (activePipeline != CapturePipeline.CAMERA2_HIGHSPEED) return false
-        return highSpeedSession?.focusAt(normalizedX, normalizedY) ?: false
     }
 
     fun getBufferFillRatio(): Float {
-        return (ringBuffer.durationUs().toFloat() / retentionUs.toFloat()).coerceIn(0f, 1f)
+        val duration = ringBuffer?.durationUs() ?: 0L
+        return (duration.toFloat() / retentionUs.toFloat()).coerceIn(0f, 1f)
     }
 
     private fun bindInternal(owner: LifecycleOwner, previewView: PreviewView, settings: PrecorderSettings): Boolean {
@@ -340,7 +355,7 @@ class PrecorderEngine(private val context: Context) {
                 provider.bindToLifecycle(owner, fallbackSelector, preview, analysis)
             }.getOrElse { fallbackError ->
                 Log.e(TAG, "CameraX bind failed (primary + fallback)", fallbackError)
-                onProfileFallback?.invoke("Kamera aktuell nicht verfuegbar. Bitte kurz warten und erneut oeffnen.")
+                onProfileFallback?.invoke("Kamera gerade nicht verfügbar. Bitte kurz warten und die App erneut öffnen.")
                 null
             }
         }
@@ -351,6 +366,7 @@ class PrecorderEngine(private val context: Context) {
         announcePipeline(CapturePipeline.CAMERAX, resolvedCameraId, settings.targetFps)
         toggleTorch(settings.torchEnabled)
         if (currentZoomRatio != 1f) runCatching { cam.cameraControl.setZoomRatio(currentZoomRatio) }
+        if (exposureEv != 0f) runCatching { cam.cameraControl.setExposureCompensationIndex(exposureIndexFor(resolvedCameraId, exposureEv)) }
         return true
     }
 
@@ -389,8 +405,10 @@ class PrecorderEngine(private val context: Context) {
             previewView = highSpeedPreviewView,
             encoderSurface = inputSurface,
             torch = requestedTorchEnabled,
-            initialZoomRatio = currentZoomRatio
+            initialZoomRatio = currentZoomRatio,
+            exposureIndex = exposureIndexFor(profile.cameraId, exposureEv)
         )
+        onPreviewAspectChanged?.invoke(MeteringMath.displayAspect(profile.characteristics, profile.size))
         startHighSpeedDrainLoop()
     }
 
@@ -433,8 +451,10 @@ class PrecorderEngine(private val context: Context) {
             previewView = highSpeedPreviewView,
             encoderSurface = inputSurface,
             torch = requestedTorchEnabled,
-            initialZoomRatio = currentZoomRatio
+            initialZoomRatio = currentZoomRatio,
+            exposureIndex = exposureIndexFor(profile.cameraId, exposureEv)
         )
+        onPreviewAspectChanged?.invoke(MeteringMath.displayAspect(profile.characteristics, profile.size))
         startHighSpeedDrainLoop()
     }
 
@@ -653,20 +673,6 @@ class PrecorderEngine(private val context: Context) {
         }
     }
 
-    private fun maybeApplyRuntimeExposureOverride(cam: Camera, settings: PrecorderSettings) {
-        if (!pendingExposureApply) return
-        val now = System.currentTimeMillis()
-        if (now - lastExposureApplyMs < 250L) return
-        lastExposureApplyMs = now
-        pendingExposureApply = !applyRuntimeExposureOverride(cam, settings)
-    }
-
-    @Suppress("UNUSED_PARAMETER")
-    private fun applyRuntimeExposureOverride(cam: Camera, settings: PrecorderSettings): Boolean {
-        // Keep AE active so exposure can still auto-correct (especially overexposure) at high FPS.
-        return true
-    }
-
     private fun ensureCodec(width: Int, height: Int, settings: PrecorderSettings, useSurfaceInput: Boolean) {
 
         if (formatReady && (width != formatWidth || height != formatHeight || codecUsesSurfaceInput != useSurfaceInput)) {
@@ -680,9 +686,8 @@ class PrecorderEngine(private val context: Context) {
             runCatching { codecInputSurface?.release() }
             codecInputSurface = null
             codec = null
-            synchronized(bufferLock) {
-                ringBuffer = EncodedFrameRingBuffer(retentionUs)
-            }
+            ringBuffer?.close()
+            ringBuffer = null
             notifyBufferProgress(0f)
         }
 
@@ -692,13 +697,14 @@ class PrecorderEngine(private val context: Context) {
         formatHeight = height
         codecUsesSurfaceInput = useSurfaceInput
 
+        val bitRate = estimateBitrate(settings.targetFps, formatWidth, formatHeight)
         val mediaFormat = MediaFormat.createVideoFormat(MIME_TYPE, formatWidth, formatHeight).apply {
             setInteger(
                 MediaFormat.KEY_COLOR_FORMAT,
                 if (useSurfaceInput) MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface
                 else MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible
             )
-            setInteger(MediaFormat.KEY_BIT_RATE, estimateBitrate(settings.targetFps, formatWidth, formatHeight))
+            setInteger(MediaFormat.KEY_BIT_RATE, bitRate)
             setInteger(MediaFormat.KEY_FRAME_RATE, settings.targetFps)
             setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
         }
@@ -718,13 +724,15 @@ class PrecorderEngine(private val context: Context) {
         }
         codec = newCodec
         formatReady = true
+        // Sized for this encoder's bitrate. A ring of an earlier configuration is freed once its export has finished.
+        ringBuffer?.close()
+        ringBuffer = EncodedFrameRingBuffer.create(bitRate, settings.targetFps, retentionUs)
     }
 
     private fun encodeImage(image: ImageProxy, settings: PrecorderSettings) {
         try {
             camera?.let {
                 maybeApplyRuntimeFpsOverride(it, settings)
-                maybeApplyRuntimeExposureOverride(it, settings)
             }
             synchronized(codecLock) {
                 ensureCodec(image.width, image.height, settings, useSurfaceInput = false)
@@ -759,21 +767,12 @@ class PrecorderEngine(private val context: Context) {
             when {
                 outIndex >= 0 -> {
                     val buffer = codec.getOutputBuffer(outIndex)
-                    if (buffer != null && info.size > 0) {
-                        val bytes = ByteArray(info.size)
-                        buffer.position(info.offset)
+                    // Codec config (SPS/PPS) reaches the muxer through encoderOutputFormat, not through the ring.
+                    val isConfig = (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0
+                    if (buffer != null && info.size > 0 && !isConfig) {
                         buffer.limit(info.offset + info.size)
-                        buffer.get(bytes)
-                        synchronized(bufferLock) {
-                            ringBuffer.append(
-                                EncodedFrame(
-                                    data = bytes,
-                                    presentationTimeUs = info.presentationTimeUs,
-                                    flags = info.flags,
-                                    isConfig = (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0
-                                )
-                            )
-                        }
+                        buffer.position(info.offset)
+                        ringBuffer?.append(buffer, info.size, info.presentationTimeUs, info.flags)
                         // The UI only needs ~10 updates per second, not one per frame (up to 240/s).
                         val nowMs = SystemClock.elapsedRealtime()
                         if (nowMs - lastBufferNotifyMs >= BUFFER_NOTIFY_INTERVAL_MS) {
@@ -801,70 +800,69 @@ class PrecorderEngine(private val context: Context) {
 
     fun exportClip(settings: PrecorderSettings, deviceSurfaceRotation: Int, onDone: (Uri?) -> Unit) {
         ioScope.launch {
-            // 2-buffer approach: swap out the active ring in O(1), continue recording immediately.
-            val exportBuffer = synchronized(bufferLock) {
-                val frozen = ringBuffer
-                ringBuffer = EncodedFrameRingBuffer(retentionUs)
-                frozen
-            }
-            notifyBufferProgress(0f)
-
-            val allFrames = exportBuffer.snapshot().filterNot { it.isConfig }
+            // Read pointer: the lease freezes the frames to export while recording continues around them.
+            // Nothing is swapped out, so the buffer is still full right after the save.
+            val lease = ringBuffer?.beginRead()
             val format = encoderOutputFormat
-            if (allFrames.size < 8 || format == null) {
+            if (lease == null || format == null) {
+                lease?.close()
                 onDone(null)
                 return@launch
             }
-
-
-            val firstKeyIndex = allFrames.indexOfFirst { (it.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0 }
-            if (firstKeyIndex < 0) {
-                onDone(null)
-                return@launch
-            }
-            val frames = allFrames.subList(firstKeyIndex, allFrames.size)
-
-            val output = createOutputTarget(settings) ?: run {
-                onDone(null)
-                return@launch
-            }
-
-            val success = runCatching {
-                val outputFd = output.fileDescriptor ?: error("No output file descriptor")
-                val muxer = MediaMuxer(outputFd, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
-                var muxerStarted = false
-                var wroteSamples = false
-                try {
-                    muxer.setOrientationHint(computeOrientationHint(settings, deviceSurfaceRotation))
-                    val track = muxer.addTrack(format)
-                    muxer.start()
-                    muxerStarted = true
-
-                    val stepUs = 1_000_000L / settings.playbackFps.coerceAtLeast(1)
-                    frames.forEachIndexed { index, frame ->
-                        val info = MediaCodec.BufferInfo().apply {
-                            offset = 0
-                            size = frame.data.size
-                            presentationTimeUs = index * stepUs
-                            flags = if ((frame.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0) MediaCodec.BUFFER_FLAG_KEY_FRAME else 0
-                        }
-                        muxer.writeSampleData(track, frame.asByteBuffer(), info)
-                        wroteSamples = true
-                    }
-                    if (!wroteSamples) error("No media samples written")
-                } finally {
-                    if (muxerStarted && wroteSamples) runCatching { muxer.stop() }
-                    runCatching { muxer.release() }
-                }
-                output.markCompleted()
-                true
-            }.onFailure {
-                output.cleanupOnFailure()
-                Log.e(TAG, "Export failed", it)
-            }.getOrDefault(false)
-
-            onDone(if (success) output.uri else null)
+            onDone(lease.use { exportFrames(it, format, settings, deviceSurfaceRotation) })
         }
+    }
+
+    private fun exportFrames(
+        lease: EncodedFrameRingBuffer.Lease,
+        format: MediaFormat,
+        settings: PrecorderSettings,
+        deviceSurfaceRotation: Int
+    ): Uri? {
+        val firstKeyIndex = lease.frames.indexOfFirst { it.isKeyFrame }
+        if (firstKeyIndex < 0 || lease.frames.size - firstKeyIndex < 8) return null
+        val frames = lease.frames.subList(firstKeyIndex, lease.frames.size)
+
+        // Slow motion by the measured capture rate instead of frame index: a dropped frame leaves its gap
+        // instead of speeding up the clip, and a camera that delivers less than its target still plays smoothly.
+        val firstPts = frames.first().presentationTimeUs
+        val spanUs = frames.last().presentationTimeUs - firstPts
+        val capturedFps = if (spanUs > 0) (frames.size - 1) * 1_000_000.0 / spanUs else settings.targetFps.toDouble()
+        val timeScale = capturedFps / settings.playbackFps.coerceAtLeast(1)
+
+        val output = createOutputTarget(settings) ?: return null
+        return runCatching {
+            val outputFd = output.fileDescriptor ?: error("No output file descriptor")
+            val muxer = MediaMuxer(outputFd, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+            var muxerStarted = false
+            var wroteSamples = false
+            try {
+                muxer.setOrientationHint(computeOrientationHint(settings, deviceSurfaceRotation))
+                val track = muxer.addTrack(format)
+                muxer.start()
+                muxerStarted = true
+
+                frames.forEach { frame ->
+                    val info = MediaCodec.BufferInfo().apply {
+                        offset = 0
+                        size = frame.size
+                        presentationTimeUs = ((frame.presentationTimeUs - firstPts) * timeScale).toLong()
+                        flags = if (frame.isKeyFrame) MediaCodec.BUFFER_FLAG_KEY_FRAME else 0
+                    }
+                    muxer.writeSampleData(track, lease.data(frame), info)
+                    wroteSamples = true
+                }
+                if (!wroteSamples) error("No media samples written")
+            } finally {
+                if (muxerStarted && wroteSamples) runCatching { muxer.stop() }
+                runCatching { muxer.release() }
+            }
+            output.markCompleted()
+            output.uri
+        }.onFailure {
+            output.cleanupOnFailure()
+            Log.e(TAG, "Export failed", it)
+        }.getOrNull()
     }
 
     fun release() {
@@ -892,9 +890,8 @@ class PrecorderEngine(private val context: Context) {
 
     private fun resetEncodingState() {
         synchronized(codecLock) {
-            synchronized(bufferLock) {
-                ringBuffer.clear()
-            }
+            ringBuffer?.close()
+            ringBuffer = null
             notifyBufferProgress(0f)
             encoderOutputFormat = null
             lastSamplePtsUs = -1L
@@ -911,7 +908,6 @@ class PrecorderEngine(private val context: Context) {
             encodedWindowStartUs = -1L
             encodedWindowFrames = 0
             encodedFps = 0f
-            pendingExposureApply = true
             pendingFpsApply = true
             manualSensorModeActive = false
             formatReady = false
