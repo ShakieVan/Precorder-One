@@ -350,10 +350,10 @@ class MainActivity : AppCompatActivity() {
     private fun updateProfileChip(settings: PrecorderSettings) {
         val factor = settings.targetFps.toFloat() / settings.playbackFps.coerceAtLeast(1)
         binding.profileChip.text = if (factor <= 1.01f) {
-            getString(R.string.profile_realtime, settings.targetFps, settings.aspectRatio)
+            getString(R.string.profile_realtime, settings.targetFps)
         } else {
             val factorText = if (abs(factor - factor.roundToInt()) < 0.05f) "${factor.roundToInt()}" else String.format("%.1f", factor)
-            getString(R.string.profile_slowmo, settings.targetFps, factorText, settings.aspectRatio)
+            getString(R.string.profile_slowmo, settings.targetFps, factorText)
         }
     }
 
@@ -544,7 +544,7 @@ class MainActivity : AppCompatActivity() {
         binding.btnTrigger.alpha = if (isSaving) 0.6f else 1f
         binding.statusChip.text = when {
             isSaving -> getString(R.string.status_saving)
-            triggerArmed -> getString(R.string.status_ready, lastBoundSettings?.loopSeconds ?: 0)
+            triggerArmed -> getString(R.string.status_ready)
             else -> getString(R.string.status_buffering, percent)
         }
         TextViewCompat.setCompoundDrawableTintList(binding.statusChip, ColorStateList.valueOf(color))

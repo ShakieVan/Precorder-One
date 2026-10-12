@@ -3,10 +3,10 @@
     <!-- Hauptansicht -->
     <string name="status_starting">START</string>
     <string name="status_buffering">PUFFER %1$d %%</string>
-    <string name="status_ready">BEREIT · %1$d s</string>
+    <string name="status_ready">BEREIT</string>
     <string name="status_saving">SPEICHERT …</string>
-    <string name="profile_realtime">%1$d fps · Echtzeit · %2$s</string>
-    <string name="profile_slowmo">%1$d fps · %2$s× Zeitlupe · %3$s</string>
+    <string name="profile_realtime">%1$d fps</string>
+    <string name="profile_slowmo">%1$d fps · %2$s×</string>
     <string name="trigger_button">Clip speichern</string>
     <string name="settings_button">Einstellungen</string>
     <string name="torch_button">Kameralicht</string>

@@ -195,6 +195,7 @@
                     android:max="100"
                     app:indicatorColor="@color/buffer_amber"
                     app:indicatorSize="88dp"
+                    app:indicatorTrackGapSize="0dp"
                     app:trackColor="#33FFFFFF"
                     app:trackCornerRadius="2dp"
                     app:trackThickness="4dp" />
