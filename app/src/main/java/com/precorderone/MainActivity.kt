@@ -365,9 +365,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     companion object {
+        // Clips have no audio track, so the microphone is not requested (denying it used to block the camera).
         private val REQUIRED_PERMISSIONS = arrayOf(
-            Manifest.permission.CAMERA,
-            Manifest.permission.RECORD_AUDIO
+            Manifest.permission.CAMERA
         )
     }
 }

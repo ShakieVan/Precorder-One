@@ -360,10 +360,7 @@ class PrecorderEngine(private val context: Context) {
         previewView.visibility = View.GONE
         highSpeedPreviewView.visibility = View.VISIBLE
 
-        synchronized(codecLock) {
-            ensureCodec(profile.size.width, profile.size.height, settings, useSurfaceInput = true)
-        }
-        val inputSurface = codecInputSurface
+        val inputSurface = createEncoderSurface(profile.size, settings)
         if (inputSurface == null) {
             onProfileFallback?.invoke("High-Speed Encoder Surface konnte nicht erstellt werden. Fallback auf CameraX.")
             fallbackToCameraX(settings)
@@ -403,10 +400,7 @@ class PrecorderEngine(private val context: Context) {
         previewView.visibility = View.GONE
         highSpeedPreviewView.visibility = View.VISIBLE
 
-        synchronized(codecLock) {
-            ensureCodec(profile.size.width, profile.size.height, settings, useSurfaceInput = true)
-        }
-        val inputSurface = codecInputSurface
+        val inputSurface = createEncoderSurface(profile.size, settings)
         if (inputSurface == null) {
             onProfileFallback?.invoke("Camera2 Encoder Surface konnte nicht erstellt werden. Fallback auf CameraX.")
             fallbackToCameraX(settings)
@@ -430,6 +424,18 @@ class PrecorderEngine(private val context: Context) {
             initialZoomRatio = currentNativeZoomRatio
         )
         startHighSpeedDrainLoop()
+    }
+
+    // Encoders reject some sizes a camera offers (e.g. 8K for AVC); configure() then throws instead of returning an error.
+    private fun createEncoderSurface(size: Size, settings: PrecorderSettings): Surface? {
+        return runCatching {
+            synchronized(codecLock) {
+                ensureCodec(size.width, size.height, settings, useSurfaceInput = true)
+            }
+            codecInputSurface
+        }.onFailure {
+            Log.e(TAG, "Encoder configuration failed for ${size.width}x${size.height}", it)
+        }.getOrNull()
     }
 
     private fun fallbackToCameraX(settings: PrecorderSettings) {
@@ -688,13 +694,20 @@ class PrecorderEngine(private val context: Context) {
             setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
         }
 
-        codec = MediaCodec.createEncoderByType(MIME_TYPE).apply {
-            configure(mediaFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+        val newCodec = MediaCodec.createEncoderByType(MIME_TYPE)
+        try {
+            newCodec.configure(mediaFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
             if (useSurfaceInput) {
-                codecInputSurface = createInputSurface()
+                codecInputSurface = newCodec.createInputSurface()
             }
-            start()
+            newCodec.start()
+        } catch (e: Exception) {
+            runCatching { codecInputSurface?.release() }
+            codecInputSurface = null
+            newCodec.release()
+            throw e
         }
+        codec = newCodec
         formatReady = true
     }
 
