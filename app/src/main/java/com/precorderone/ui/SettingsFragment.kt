@@ -5,12 +5,20 @@ import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.os.Bundle
 import android.util.Range
+import android.view.View
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AppCompatActivity
 import androidx.core.net.toUri
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.preference.ListPreference
 import androidx.preference.Preference
 import androidx.preference.PreferenceFragmentCompat
 import com.precorderone.R
+import com.precorderone.update.AppUpdater
+import com.precorderone.update.UpdateDialog
+import kotlinx.coroutines.launch
 
 class SettingsFragment : PreferenceFragmentCompat() {
 
@@ -29,6 +37,30 @@ class SettingsFragment : PreferenceFragmentCompat() {
         setupCameraListPreference(requireContext())
         setupStoragePreference()
         setupAspectRatioSummary()
+        setupUpdatePreferences()
+    }
+
+    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+        super.onViewCreated(view, savedInstanceState)
+        val updatePref = findPreference<Preference>(KEY_APP_UPDATE) ?: return
+        viewLifecycleOwner.lifecycleScope.launch {
+            viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                AppUpdater.state.collect { state -> updatePref.summary = AppUpdater.statusText(requireContext(), state) }
+            }
+        }
+    }
+
+    private fun setupUpdatePreferences() {
+        AppUpdater.init(requireContext())
+        findPreference<Preference>(KEY_APP_VERSION)?.summary = AppUpdater.currentVersion()
+        findPreference<Preference>(KEY_APP_UPDATE)?.setOnPreferenceClickListener {
+            if (AppUpdater.releaseOf(AppUpdater.state.value) != null) {
+                UpdateDialog.show(requireActivity() as AppCompatActivity)
+            } else {
+                AppUpdater.check(manual = true)
+            }
+            true
+        }
     }
 
     private fun setupStoragePreference() {
@@ -180,5 +212,7 @@ class SettingsFragment : PreferenceFragmentCompat() {
         private const val KEY_LENS_FACING = "lens_facing"
         private const val KEY_TARGET_FPS = "target_fps"
         private const val KEY_ASPECT_RATIO = "aspect_ratio"
+        private const val KEY_APP_VERSION = "app_version"
+        private const val KEY_APP_UPDATE = "app_update"
     }
 }

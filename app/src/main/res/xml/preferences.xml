@@ -62,4 +62,16 @@
         app:title="Vol-Down als Trigger"
         app:defaultValue="true" />
 
+    <PreferenceCategory app:title="@string/pref_category_app">
+
+        <Preference
+            app:key="app_version"
+            app:selectable="false"
+            app:title="@string/pref_version_title" />
+
+        <Preference
+            app:key="app_update"
+            app:title="@string/pref_update_title" />
+    </PreferenceCategory>
+
 </PreferenceScreen>

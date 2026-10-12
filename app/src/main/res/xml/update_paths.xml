@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Only the downloaded update APKs are shared with the system installer. -->
+<paths>
+    <files-path
+        name="updates"
+        path="updates/" />
+</paths>

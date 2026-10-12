@@ -17,11 +17,18 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.camera2.interop.ExperimentalCamera2Interop
 import androidx.core.content.ContextCompat
 import androidx.camera.view.PreviewView
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
+import com.google.android.material.snackbar.Snackbar
 import com.precorderone.camera.PrecorderEngine
 import com.precorderone.data.PrecorderSettings
 import com.precorderone.data.SettingsRepository
 import com.precorderone.databinding.ActivityMainBinding
 import com.precorderone.ui.SettingsActivity
+import com.precorderone.update.AppUpdater
+import com.precorderone.update.UpdateDialog
+import kotlinx.coroutines.launch
 import kotlin.math.abs
 
 @ExperimentalCamera2Interop
@@ -158,8 +165,31 @@ class MainActivity : AppCompatActivity() {
         }
         updateFocusUi()
         updateZoomUi()
+        setupUpdateHint()
 
         requestPermissionsIfNeeded()
+    }
+
+    private fun setupUpdateHint() {
+        AppUpdater.init(this)
+        AppUpdater.check(manual = false)
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                AppUpdater.state.collect { state ->
+                    val release = when (state) {
+                        is AppUpdater.State.Available -> state.release
+                        is AppUpdater.State.Ready -> state.release
+                        else -> null
+                    } ?: return@collect
+                    if (AppUpdater.announcedVersion == release.version) return@collect
+                    AppUpdater.announcedVersion = release.version
+                    Snackbar.make(binding.root, getString(R.string.update_snackbar, release.version), Snackbar.LENGTH_LONG)
+                        .setAnchorView(binding.orientationIndicatorRing)
+                        .setAction(R.string.update_snackbar_action) { UpdateDialog.show(this@MainActivity) }
+                        .show()
+                }
+            }
+        }
     }
 
     override fun onResume() {
@@ -326,7 +356,7 @@ class MainActivity : AppCompatActivity() {
         binding.btnTrigger.isEnabled = !isSaving
         binding.btnTrigger.alpha = if (!isSaving) 1f else 0.4f
 
-        val target = settingsRepository.load().targetFps
+        val target = lastBoundSettings?.targetFps ?: 0
         binding.debugFpsText.text = getString(R.string.debug_fps, sourceFps, queuedFps, encodedFps, dropRate, target)
 
         binding.statusText.text = when {

@@ -13,6 +13,13 @@ val keyProperties = Properties().apply {
 }
 val hasCustomReleaseSigning = keyProperties.getProperty("storeFile")?.isNotBlank() == true
 
+// Single source for the version. versionCode follows X.Y.Z -> X*1_000_000 + Y*1_000 + Z (as in Mau-Mau Flip),
+// so every release is guaranteed to be newer than the one before; the in-app updater relies on that.
+val appVersion = "1.1.0"
+val appVersionCode = appVersion.split(".").map(String::toInt).let { (major, minor, patch) ->
+    major * 1_000_000 + minor * 1_000 + patch
+}
+
 android {
     namespace = "com.precorderone"
     compileSdk = 34
@@ -21,8 +28,8 @@ android {
         applicationId = "com.precorderone"
         minSdk = 28
         targetSdk = 34
-        versionCode = 4
-        versionName = "1.0.0"
+        versionCode = appVersionCode
+        versionName = appVersion
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -65,6 +72,15 @@ android {
     }
     buildFeatures {
         viewBinding = true
+    }
+}
+
+// The updater only accepts a release asset named exactly PrecorderOne-X.Y.Z.apk.
+android.applicationVariants.all {
+    val suffix = if (buildType.name == "release") "" else "-${buildType.name}"
+    outputs.all {
+        (this as com.android.build.gradle.internal.api.BaseVariantOutputImpl).outputFileName =
+            "PrecorderOne-$appVersion$suffix.apk"
     }
 }
 

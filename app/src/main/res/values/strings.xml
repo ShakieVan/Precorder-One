@@ -20,4 +20,41 @@
     <string name="zoom_1">1x</string>
     <string name="zoom_3">3x</string>
     <string name="zoom_5">5x</string>
+
+    <!-- App-Update (GitHub-Releases) -->
+    <string name="pref_category_app">App</string>
+    <string name="pref_version_title">Version</string>
+    <string name="pref_update_title">Nach Updates suchen</string>
+    <string name="update_not_checked">Noch nicht geprüft.</string>
+    <string name="update_last_checked">Zuletzt geprüft: %1$s</string>
+    <string name="update_checking">Suche nach Updates …</string>
+    <string name="update_up_to_date">Du hast die neueste Version.</string>
+    <string name="update_no_release">Noch kein passendes Release veröffentlicht.</string>
+    <string name="update_available">Version %1$s verfügbar – antippen für Details.</string>
+    <string name="update_downloading">Lade herunter … %1$d %%</string>
+    <string name="update_ready">Version %1$s ist bereit zur Installation.</string>
+    <string name="update_no_connection">Keine Verbindung zu GitHub. Prüfe das Internet – auch VPN- oder Firewall-Apps können es sperren.</string>
+    <string name="update_github_error">GitHub antwortet gerade nicht (Fehler %1$d). Bitte später erneut versuchen.</string>
+    <string name="update_rate_limited">GitHub-Limit erreicht – später erneut versuchen.</string>
+    <string name="update_rate_limited_minutes">GitHub-Limit erreicht – in etwa %1$d Min. erneut versuchen.</string>
+    <string name="update_download_failed">Download fehlgeschlagen.</string>
+    <string name="update_checksum_failed">Download beschädigt (Prüfsumme falsch) – bitte erneut laden.</string>
+    <string name="update_allow_install">Bitte „Apps installieren“ für Precorder-One erlauben und erneut tippen.</string>
+    <string name="update_rejected">Update abgelehnt: %1$s</string>
+    <string name="update_install_failed">Installation nicht möglich: %1$s</string>
+    <string name="update_verify_unreadable">APK nicht lesbar (Datei beschädigt?)</string>
+    <string name="update_verify_package">Falsches Paket – die Datei ist nicht Precorder-One.</string>
+    <string name="update_verify_not_newer">Keine neuere Version (eine ältere wird nie installiert).</string>
+    <string name="update_verify_version">Versionsangabe passt nicht zur Datei.</string>
+    <string name="update_verify_signature">Signatur passt nicht – die Datei stammt nicht vom Precorder-One-Projekt oder wurde verändert.</string>
+    <string name="update_verify_failed">Prüfung fehlgeschlagen: %1$s</string>
+    <string name="update_dialog_title">Version %1$s verfügbar</string>
+    <string name="update_no_notes">Keine Versionshinweise.</string>
+    <string name="update_action_download">Herunterladen</string>
+    <string name="update_action_install">Installieren</string>
+    <string name="update_action_retry">Erneut versuchen</string>
+    <string name="update_action_later">Später</string>
+    <string name="update_action_browser">Im Browser</string>
+    <string name="update_snackbar">Version %1$s ist verfügbar</string>
+    <string name="update_snackbar_action">Details</string>
 </resources>
