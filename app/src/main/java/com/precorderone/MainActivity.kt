@@ -2,6 +2,8 @@ package com.precorderone
 
 import android.Manifest
 import android.content.ActivityNotFoundException
+import android.content.ContentUris
+import android.provider.MediaStore
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
@@ -40,6 +42,7 @@ import com.precorderone.camera.PrecorderEngine
 import com.precorderone.data.PrecorderSettings
 import com.precorderone.data.SettingsRepository
 import com.precorderone.databinding.ActivityMainBinding
+import com.precorderone.ui.GalleryLauncher
 import com.precorderone.ui.QuickSettingsSheet
 import com.precorderone.ui.SettingsActivity
 import com.precorderone.update.AppUpdater
@@ -119,6 +122,7 @@ class MainActivity : AppCompatActivity() {
         updateZoomUi(rebuild = true)
         updateBufferUi()
         setupUpdateHint()
+        loadNewestClip()
         requestPermissionsIfNeeded()
     }
 
@@ -207,7 +211,7 @@ class MainActivity : AppCompatActivity() {
         binding.statusChip.setOnClickListener { showQuickSettings() }
         binding.btnTorch.setOnClickListener { toggleTorch() }
         binding.btnSwitchCamera.setOnClickListener { switchFacing() }
-        binding.lastClipThumb.setOnClickListener { openLastClip() }
+        binding.lastClipThumb.setOnClickListener { openClipAlbum() }
         binding.btnFocusAuto.setOnClickListener {
             if (!engine.clearFocusLock()) {
                 Toast.makeText(this, R.string.focus_failed, Toast.LENGTH_SHORT).show()
@@ -517,6 +521,11 @@ class MainActivity : AppCompatActivity() {
             binding.btnTrigger.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
         }
         showMessage(getString(R.string.saved_success), R.string.saved_open) { openLastClip() }
+        showLastClip(uri)
+    }
+
+    private fun showLastClip(uri: Uri) {
+        lastClipUri = uri
         lifecycleScope.launch {
             val thumbnail = withContext(Dispatchers.IO) {
                 runCatching {
@@ -531,6 +540,39 @@ class MainActivity : AppCompatActivity() {
             } ?: return@launch
             binding.lastClipThumb.setImageBitmap(thumbnail)
             binding.lastClipThumb.visibility = View.VISIBLE
+        }
+    }
+
+    /** Like a camera app, the thumbnail shows the newest clip right from the start, not only after the first save. */
+    private fun loadNewestClip() {
+        lifecycleScope.launch {
+            val newest = withContext(Dispatchers.IO) {
+                runCatching {
+                    // Without media permissions MediaStore only lists the app's own files: exactly the saved clips.
+                    contentResolver.query(
+                        MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+                        arrayOf(MediaStore.Video.Media._ID),
+                        "${MediaStore.Video.Media.DISPLAY_NAME} LIKE ?",
+                        arrayOf("precorder_%"),
+                        "${MediaStore.Video.Media.DATE_ADDED} DESC"
+                    )?.use { cursor ->
+                        if (cursor.moveToFirst()) {
+                            ContentUris.withAppendedId(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, cursor.getLong(0))
+                        } else {
+                            null
+                        }
+                    }
+                }.getOrNull()
+            } ?: return@launch
+            if (lastClipUri == null) showLastClip(newest)
+        }
+    }
+
+    /** Thumbnail tap: the gallery in the clips' album (Samsung), otherwise the clip in the gallery. */
+    private fun openClipAlbum() {
+        val uri = lastClipUri ?: return
+        if (!GalleryLauncher.openAlbumOf(this, uri)) {
+            Toast.makeText(this, R.string.no_video_player, Toast.LENGTH_SHORT).show()
         }
     }
 
