@@ -46,11 +46,17 @@ internal class HighSpeedCamera2Session(
     private var zoomRatio = 1f
     @Volatile
     private var running = false
+    // Bumped by stop(): a camera opened for an earlier start() gets closed instead of used.
+    @Volatile
+    private var generation = 0
+    @Volatile
+    private var openAttempts = 0
 
     fun start(profile: Profile, previewView: SurfaceView, encoderSurface: Surface, torch: Boolean, initialZoomRatio: Float) {
         stop()
         running = true
         openRequested = false
+        openAttempts = 0
         activeProfile = profile
         activeEncoderSurface = encoderSurface
         activePreviewView = previewView
@@ -126,11 +132,12 @@ internal class HighSpeedCamera2Session(
 
     fun stop() {
         running = false
+        generation++
         runCatching { captureSession?.stopRepeating() }
         runCatching { captureSession?.close() }
         captureSession = null
         previewSurface = null
-        runCatching { cameraDevice?.close() }
+        cameraDevice?.let { CameraCloseGate.close(it) }
         cameraDevice = null
         activeEncoderSurface = null
         activeProfile = null
@@ -161,27 +168,63 @@ internal class HighSpeedCamera2Session(
         openRequested = true
         val handler = cameraHandler ?: return
         val profile = activeProfile ?: return
+        val gen = generation
+        // Open only once a camera closed before (lens switch, other pipeline) is really released.
+        CameraCloseGate.whenClear(handler) {
+            if (gen == generation && running) openCameraNow(previewView, profile, handler, gen)
+        }
+    }
+
+    private fun openCameraNow(previewView: SurfaceView, profile: Profile, handler: Handler, gen: Int) {
         val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
         runCatching {
             manager.openCamera(profile.cameraId, object : CameraDevice.StateCallback() {
                 override fun onOpened(camera: CameraDevice) {
+                    // stop() ran while this camera was opening: it belongs to no session, so release it.
+                    if (gen != generation) {
+                        CameraCloseGate.close(camera)
+                        return
+                    }
                     cameraDevice = camera
                     createSession(previewView, camera)
                 }
 
                 override fun onDisconnected(camera: CameraDevice) {
-                    camera.close()
+                    CameraCloseGate.close(camera)
+                    if (gen != generation) return
                     cameraDevice = null
-                    if (running) onError("High-Speed-Kamera getrennt", null)
+                    if (running && !retryOpen(previewView)) onError("High-Speed-Kamera getrennt", null)
                 }
 
                 override fun onError(camera: CameraDevice, error: Int) {
-                    camera.close()
+                    CameraCloseGate.close(camera)
+                    if (gen != generation) return
                     cameraDevice = null
-                    if (running) onError("High-Speed-Kamerafehler: $error", null)
+                    val busy = error == ERROR_CAMERA_IN_USE || error == ERROR_MAX_CAMERAS_IN_USE
+                    if (running && !(busy && retryOpen(previewView))) onError("High-Speed-Kamerafehler: $error", null)
+                }
+
+                override fun onClosed(camera: CameraDevice) {
+                    CameraCloseGate.closed(camera)
                 }
             }, handler)
-        }.onFailure { onError("Kamera konnte nicht geoeffnet werden", it) }
+        }.onFailure { if (!retryOpen(previewView)) onError("Kamera konnte nicht geoeffnet werden", it) }
+    }
+
+    // Closing a camera is asynchronous. Opening another one right after (lens switch) can find the HAL still busy,
+    // so try again shortly before giving up.
+    private fun retryOpen(previewView: SurfaceView): Boolean {
+        val handler = cameraHandler ?: return false
+        if (!running || openAttempts >= MAX_OPEN_RETRIES) return false
+        openAttempts++
+        val gen = generation
+        handler.postDelayed({
+            if (gen == generation && running) {
+                openRequested = false
+                openCamera(previewView)
+            }
+        }, OPEN_RETRY_DELAY_MS)
+        return true
     }
 
     private fun createSession(previewView: SurfaceView, camera: CameraDevice) {
@@ -279,6 +322,9 @@ internal class HighSpeedCamera2Session(
     }
 
     companion object {
+        private const val MAX_OPEN_RETRIES = 3
+        private const val OPEN_RETRY_DELAY_MS = 300L
+
         fun chooseProfile(context: Context, targetFps: Int, lensFacing: Int, preferredCameraId: String?, aspect: String): Profile? {
             val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
             val cameraId = preferredCameraId ?: manager.cameraIdList.firstOrNull { id ->
