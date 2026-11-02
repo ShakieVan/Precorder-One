@@ -26,6 +26,10 @@
             android:screenOrientation="portrait"
             android:theme="@style/Theme.PrecorderOne.Settings" />
         <activity
+            android:name=".ui.GalleryHostActivity"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout"
+            android:exported="false" />
+        <activity
             android:name=".MainActivity"
             android:exported="true"
             android:screenOrientation="portrait">

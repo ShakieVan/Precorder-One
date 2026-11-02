@@ -42,7 +42,7 @@ import com.precorderone.camera.PrecorderEngine
 import com.precorderone.data.PrecorderSettings
 import com.precorderone.data.SettingsRepository
 import com.precorderone.databinding.ActivityMainBinding
-import com.precorderone.ui.GalleryLauncher
+import com.precorderone.ui.GalleryHostActivity
 import com.precorderone.ui.QuickSettingsSheet
 import com.precorderone.ui.SettingsActivity
 import com.precorderone.update.AppUpdater
@@ -571,9 +571,7 @@ class MainActivity : AppCompatActivity() {
     /** Thumbnail tap: the gallery in the clips' album (Samsung), otherwise the clip in the gallery. */
     private fun openClipAlbum() {
         val uri = lastClipUri ?: return
-        if (!GalleryLauncher.openAlbumOf(this, uri)) {
-            Toast.makeText(this, R.string.no_video_player, Toast.LENGTH_SHORT).show()
-        }
+        startActivity(Intent(this, GalleryHostActivity::class.java).setData(uri))
     }
 
     private fun openLastClip() {
