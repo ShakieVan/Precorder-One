@@ -62,6 +62,8 @@ class MainActivity : AppCompatActivity() {
 
     private var isRecordingLoop = false
     private var isSaving = false
+    // 0..1 while a clip is re-encoded with its timecode; null while there is nothing to count.
+    private var saveProgress: Float? = null
     private var bufferFill = 0f
     private var currentPhysicalRotation = Surface.ROTATION_0
     private var iconRotation = 0f
@@ -302,7 +304,8 @@ class MainActivity : AppCompatActivity() {
         lastBoundSettings = settings
         isRecordingLoop = true
         bufferFill = 0f
-        isSaving = false
+        // isSaving stays as it is: a clip that is still being saved (it may take a while with the timecode) ends
+        // through its own callback, and a second save must not start beside it.
         triggerArmed = false
         focusLocked = false
         updateTorchIcon(settings.torchEnabled)
@@ -505,22 +508,39 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startExport(settings: PrecorderSettings) {
+        saveProgress = null
         updateBufferUi()
-        engine.exportClip(settings, currentPhysicalRotation) { uri ->
+        engine.exportClip(
+            settings,
+            currentPhysicalRotation,
+            burnTimecode = settingsRepository.burnTimecode(),
+            // Burning the timecode in takes a while for long clips: show how far it is.
+            onProgress = { progress ->
+                runOnUiThread {
+                    if (isSaving) {
+                        saveProgress = progress
+                        updateBufferUi()
+                    }
+                }
+            }
+        ) { result ->
             runOnUiThread {
                 isSaving = false
-                if (uri != null) onClipSaved(uri) else showMessage(getString(R.string.saved_failed))
+                saveProgress = null
+                val uri = result.uri
+                if (uri != null) onClipSaved(uri, result.timecodeMissing) else showMessage(getString(R.string.saved_failed))
                 updateBufferUi()
             }
         }
     }
 
-    private fun onClipSaved(uri: Uri) {
+    private fun onClipSaved(uri: Uri, timecodeMissing: Boolean) {
         lastClipUri = uri
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             binding.btnTrigger.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
         }
-        showMessage(getString(R.string.saved_success), R.string.saved_open) { openLastClip() }
+        val message = if (timecodeMissing) R.string.saved_without_timecode else R.string.saved_success
+        showMessage(getString(message), R.string.saved_open) { openLastClip() }
         showLastClip(uri)
     }
 
@@ -616,7 +636,8 @@ class MainActivity : AppCompatActivity() {
                 val remainingMs = (postRollEndsAtMs - SystemClock.elapsedRealtime()).coerceAtLeast(0)
                 getString(R.string.status_post_roll, ((remainingMs + 999) / 1000).toInt())
             }
-            isSaving -> getString(R.string.status_saving)
+            isSaving -> saveProgress?.let { getString(R.string.status_saving_progress, (it * 100).toInt().coerceIn(0, 100)) }
+                ?: getString(R.string.status_saving)
             triggerArmed -> getString(R.string.status_ready)
             else -> getString(R.string.status_buffering, percent)
         }

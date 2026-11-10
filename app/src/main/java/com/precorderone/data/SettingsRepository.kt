@@ -8,7 +8,7 @@ class SettingsRepository(context: Context) {
     private val prefs = PreferenceManager.getDefaultSharedPreferences(context)
 
     fun load(): PrecorderSettings = PrecorderSettings(
-        loopSeconds = prefs.getString(KEY_LOOP_SECONDS, "5")?.toIntOrNull()?.coerceIn(5, 10) ?: 5,
+        loopSeconds = prefs.getString(KEY_LOOP_SECONDS, "5")?.toIntOrNull()?.coerceIn(5, 60) ?: 5,
         targetFps = prefs.getString(KEY_TARGET_FPS, "60")?.toIntOrNull()?.coerceIn(24, 240) ?: 60,
         playbackFps = prefs.getString(KEY_PLAYBACK_FPS, "30")?.toIntOrNull()?.coerceIn(24, 120) ?: 30,
         outputFolderUri = prefs.getString(KEY_OUTPUT_URI, null),
@@ -25,6 +25,11 @@ class SettingsRepository(context: Context) {
 
     /** UI-only option, kept out of [PrecorderSettings] so toggling it never restarts the camera. */
     fun showDiagnostics(): Boolean = prefs.getBoolean(KEY_SHOW_DIAGNOSTICS, false)
+
+    /** Applied when a clip is saved, so it is kept out of [PrecorderSettings] too: switching it keeps the buffer. */
+    fun burnTimecode(): Boolean = prefs.getBoolean(KEY_BURN_TIMECODE, true)
+
+    fun setBurnTimecode(enabled: Boolean) = prefs.edit().putBoolean(KEY_BURN_TIMECODE, enabled).apply()
 
     fun save(settings: PrecorderSettings) {
         prefs.edit()
@@ -55,5 +60,6 @@ class SettingsRepository(context: Context) {
         const val KEY_SHOW_DIAGNOSTICS = "show_diagnostics"
         const val KEY_POST_ROLL = "post_roll"
         const val KEY_RECORD_AUDIO = "record_audio"
+        const val KEY_BURN_TIMECODE = "burn_timecode"
     }
 }

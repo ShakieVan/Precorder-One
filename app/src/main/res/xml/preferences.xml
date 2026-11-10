@@ -54,6 +54,13 @@
             app:key="record_audio"
             app:summary="@string/pref_audio_summary"
             app:title="@string/pref_audio_title" />
+
+        <SwitchPreferenceCompat
+            app:defaultValue="true"
+            app:iconSpaceReserved="false"
+            app:key="burn_timecode"
+            app:summary="@string/pref_timecode_summary"
+            app:title="@string/pref_timecode_title" />
     </PreferenceCategory>
 
     <PreferenceCategory

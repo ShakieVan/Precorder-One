@@ -1,6 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<!-- Scrolls when the options do not fit the screen (small phones, landscape). -->
+<androidx.core.widget.NestedScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content">
+
+<LinearLayout
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
     android:orientation="vertical"
@@ -61,6 +66,17 @@
 
     <TextView
         style="@style/Widget.PrecorderOne.SheetLabel"
+        android:text="@string/quick_timecode" />
+
+    <com.google.android.material.chip.ChipGroup
+        android:id="@+id/timecodeGroup"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        app:selectionRequired="true"
+        app:singleSelection="true" />
+
+    <TextView
+        style="@style/Widget.PrecorderOne.SheetLabel"
         android:text="@string/quick_aspect" />
 
     <com.google.android.material.chip.ChipGroup
@@ -79,3 +95,4 @@
         android:layout_marginTop="12dp"
         android:text="@string/quick_all_settings" />
 </LinearLayout>
+</androidx.core.widget.NestedScrollView>

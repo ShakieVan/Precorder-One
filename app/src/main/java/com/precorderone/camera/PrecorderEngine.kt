@@ -1,6 +1,7 @@
 package com.precorderone.camera
 
 import android.Manifest
+import android.app.ActivityManager
 import android.content.ContentValues
 import android.content.pm.PackageManager
 import android.content.Context
@@ -45,10 +46,14 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import java.io.File
+import java.io.FileDescriptor
+import java.io.RandomAccessFile
 import java.nio.ByteBuffer
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import kotlin.math.abs
+import kotlin.math.min
 
 @ExperimentalCamera2Interop
 class PrecorderEngine(private val context: Context) {
@@ -66,6 +71,8 @@ class PrecorderEngine(private val context: Context) {
     private var codecInputSurface: Surface? = null
     private var codecUsesSurfaceInput = false
     private var encoderOutputFormat: MediaFormat? = null
+    @Volatile
+    private var encoderBitRate = 0
     // Created with the encoder (size depends on its bitrate); written by the drain thread, read by the export.
     @Volatile
     private var ringBuffer: EncodedFrameRingBuffer? = null
@@ -476,12 +483,18 @@ class PrecorderEngine(private val context: Context) {
         stopAudio()
         if (!settings.recordAudio || settings.targetFps != settings.playbackFps) return
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) return
-        val bootTime = cameraId?.let { id ->
+        // The sound needs the clock of the video timestamps. On the surface pipelines that is always CLOCK_MONOTONIC:
+        // the camera service converts the timestamps of frames it hands to a video encoder, also when the sensor
+        // itself counts in boot time (measured on S10/Android 12 and S21/Android 15). Only CameraX' ImageAnalysis
+        // passes the sensor's clock through. The two clocks differ by the time the phone has slept since booting,
+        // soon hours; sound stamped with the wrong one misses the clip altogether.
+        val sensorBootTime = cameraId?.let { id ->
             runCatching {
                 cameraManager().getCameraCharacteristics(id).get(CameraCharacteristics.SENSOR_INFO_TIMESTAMP_SOURCE) ==
                     CameraCharacteristics.SENSOR_INFO_TIMESTAMP_SOURCE_REALTIME
             }.getOrNull()
         } ?: true
+        val bootTime = activePipeline == CapturePipeline.CAMERAX && sensorBootTime
         audioRecorder = AudioRingRecorder(retentionUs, bootTime).takeIf { it.start() }
         if (audioRecorder == null) onProfileFallback?.invoke("Mikrofon nicht verfügbar – Clips werden ohne Ton gespeichert.")
     }
@@ -730,7 +743,12 @@ class PrecorderEngine(private val context: Context) {
         formatHeight = height
         codecUsesSurfaceInput = useSurfaceInput
 
-        val bitRate = estimateBitrate(settings.targetFps, formatWidth, formatHeight)
+        // A long buffer has to fit into memory: beyond that, the bitrate gives way, not the length.
+        val ringBytes = ringBudgetBytes()
+        val wantedBitRate = estimateBitrate(settings.targetFps, formatWidth, formatHeight)
+        val bitRate = min(wantedBitRate, EncodedFrameRingBuffer.maxBitRate(retentionUs, ringBytes))
+        Log.i(TAG, "ENCODER ${formatWidth}x$formatHeight @${settings.targetFps} fps, $bitRate bit/s (wanted $wantedBitRate), ring up to ${ringBytes shr 20} MB")
+        encoderBitRate = bitRate
         val mediaFormat = MediaFormat.createVideoFormat(MIME_TYPE, formatWidth, formatHeight).apply {
             setInteger(
                 MediaFormat.KEY_COLOR_FORMAT,
@@ -759,7 +777,14 @@ class PrecorderEngine(private val context: Context) {
         formatReady = true
         // Sized for this encoder's bitrate. A ring of an earlier configuration is freed once its export has finished.
         ringBuffer?.close()
-        ringBuffer = EncodedFrameRingBuffer.create(bitRate, settings.targetFps, retentionUs)
+        ringBuffer = EncodedFrameRingBuffer.create(bitRate, settings.targetFps, retentionUs, ringBytes)
+    }
+
+    /** Memory the video ring may take: a tenth of the device's RAM, at most 512 MB. */
+    private fun ringBudgetBytes(): Long {
+        val info = ActivityManager.MemoryInfo()
+        (context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager).getMemoryInfo(info)
+        return (info.totalMem / 10).coerceIn(MIN_RING_BUDGET_BYTES, EncodedFrameRingBuffer.MAX_BYTES)
     }
 
     private fun encodeImage(image: ImageProxy, settings: PrecorderSettings) {
@@ -831,18 +856,31 @@ class PrecorderEngine(private val context: Context) {
         }
     }
 
+    /** A saved clip, or [uri] null when saving failed. [timecodeMissing]: saved, but without the timecode asked for. */
+    class ExportResult(val uri: Uri?, val timecodeMissing: Boolean = false)
+
     /**
      * Saves the buffer as MP4. The leases are taken right here on the caller's thread, so pausing right after the
      * call (app sent to background during the post-roll) cannot reset the buffers under the running export.
+     *
+     * With [burnTimecode] the clip is re-encoded with its running time in the picture, which takes a while:
+     * [onProgress] reports 0..1 of that. [onDone] is always called, on a background thread.
      */
-    fun exportClip(settings: PrecorderSettings, deviceSurfaceRotation: Int, onDone: (Uri?) -> Unit) {
+    fun exportClip(
+        settings: PrecorderSettings,
+        deviceSurfaceRotation: Int,
+        burnTimecode: Boolean,
+        onProgress: (Float) -> Unit = {},
+        onDone: (ExportResult) -> Unit
+    ) {
         // Read pointer: the lease freezes the frames to export while recording continues around them.
         // Nothing is swapped out, so the buffer is still full right after the save.
         val lease = ringBuffer?.beginRead()
         val format = encoderOutputFormat
+        val bitRate = encoderBitRate
         if (lease == null || format == null) {
             lease?.close()
-            onDone(null)
+            onDone(ExportResult(null))
             return
         }
         val audio = audioRecorder?.let { recorder ->
@@ -856,17 +894,33 @@ class PrecorderEngine(private val context: Context) {
             }
         }
         val orientationHint = computeOrientationHint(settings, deviceSurfaceRotation)
+        val releaseLeases = {
+            lease.close()
+            audio?.lease?.close()
+            Unit
+        }
         ioScope.launch {
-            val uri = try {
-                exportFrames(lease, format, settings, orientationHint, audio)
+            val result = try {
+                if (burnTimecode) {
+                    exportWithTimecode(lease, format, settings, orientationHint, audio, bitRate, releaseLeases, onProgress)
+                } else {
+                    ExportResult(exportFrames(lease, format, settings, orientationHint, audio))
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Export failed", e)
+                ExportResult(null)
             } finally {
-                lease.close()
-                audio?.lease?.close()
+                releaseLeases()
             }
-            onDone(uri)
+            onDone(result)
         }
     }
 
+    // Slow-motion factor as set (120 -> 30 fps = 4x); real time stays real time even when the camera delivers fewer
+    // frames than its target.
+    private fun timeScale(settings: PrecorderSettings) = settings.targetFps.toDouble() / settings.playbackFps.coerceAtLeast(1)
+
+    /** Writes the leased frames straight into the clip, as they are. */
     private fun exportFrames(
         lease: EncodedFrameRingBuffer.Lease,
         format: MediaFormat,
@@ -875,20 +929,79 @@ class PrecorderEngine(private val context: Context) {
         audio: ClipMuxer.AudioInput?
     ): Uri? {
         val frames = ClipMuxer.framesToExport(lease) ?: return null
+        return writeClip(settings) { fd ->
+            ClipMuxer.write(lease, frames, format, fd, orientationHint, timeScale(settings), audio)
+        }
+    }
+
+    /**
+     * Saves the clip with the timecode burnt in. Re-encoding takes far longer than the ring may be held, so the frames
+     * first go into a real-time copy in the cache as they are, which is quick. That frees the ring ([releaseLeases])
+     * and recording goes on without a hole while [TimecodeBurner] works from the copy. If burning fails the clip is
+     * still saved, without timecode.
+     */
+    private fun exportWithTimecode(
+        lease: EncodedFrameRingBuffer.Lease,
+        format: MediaFormat,
+        settings: PrecorderSettings,
+        orientationHint: Int,
+        audio: ClipMuxer.AudioInput?,
+        liveBitRate: Int,
+        releaseLeases: () -> Unit,
+        onProgress: (Float) -> Unit
+    ): ExportResult {
+        val frames = ClipMuxer.framesToExport(lease) ?: return ExportResult(null)
+        val copy = runCatching { writeRealTimeCopy(lease, frames, format, audio) }
+            .onFailure { Log.w(TAG, "No room for the copy to burn the timecode into", it) }
+            .getOrNull()
+            ?: return ExportResult(exportFrames(lease, format, settings, orientationHint, audio), timecodeMissing = true)
+        releaseLeases()
+        try {
+            val timeScale = timeScale(settings)
+            // Bits per picture as recorded plus a reserve, so that encoding a second time costs no visible quality.
+            val bitRate = (liveBitRate.toLong() * settings.playbackFps / settings.targetFps.coerceAtLeast(1) * 13 / 10)
+                .coerceIn(MIN_BIT_RATE.toLong(), MAX_BIT_RATE.toLong()).toInt()
+            val startMs = SystemClock.elapsedRealtime()
+            val burned = writeClip(settings) { fd ->
+                TimecodeBurner.burn(copy, fd, orientationHint, timeScale, settings.playbackFps, bitRate, onProgress)
+            }
+            if (burned != null) {
+                Log.i(TAG, "TIMECODE burnt into ${frames.size} frames in ${SystemClock.elapsedRealtime() - startMs} ms at $bitRate bit/s")
+                return ExportResult(burned)
+            }
+            val plain = writeClip(settings) { fd -> ClipMuxer.copy(copy, fd, orientationHint, timeScale) }
+            return ExportResult(plain, timecodeMissing = true)
+        } finally {
+            copy.delete()
+        }
+    }
+
+    /** The leased frames as a real-time MP4 in the cache: no turn, no slow motion; [TimecodeBurner] adds both. */
+    private fun writeRealTimeCopy(
+        lease: EncodedFrameRingBuffer.Lease,
+        frames: List<EncodedFrameRingBuffer.Frame>,
+        format: MediaFormat,
+        audio: ClipMuxer.AudioInput?
+    ): File {
+        val dir = File(context.cacheDir, "export").apply { mkdirs() }
+        // Left behind when the app was killed while saving.
+        val staleBefore = System.currentTimeMillis() - STALE_COPY_MS
+        dir.listFiles()?.filter { it.lastModified() < staleBefore }?.forEach { it.delete() }
+        val file = File(dir, "clip_${System.nanoTime()}.mp4")
+        try {
+            RandomAccessFile(file, "rw").use { ClipMuxer.write(lease, frames, format, it.fd, 0, 1.0, audio) }
+        } catch (e: Exception) {
+            file.delete()
+            throw e
+        }
+        return file
+    }
+
+    /** Creates the clip's file and lets [write] fill it; a failed attempt leaves no file behind. */
+    private fun writeClip(settings: PrecorderSettings, write: (FileDescriptor) -> Unit): Uri? {
         val output = createOutputTarget(settings) ?: return null
         return runCatching {
-            val outputFd = output.fileDescriptor ?: error("No output file descriptor")
-            ClipMuxer.write(
-                lease = lease,
-                frames = frames,
-                format = format,
-                fd = outputFd,
-                orientationHint = orientationHint,
-                // Slow-motion factor as set (120 -> 30 fps = 4x); real time stays real time even when the camera
-                // delivers fewer frames than its target.
-                timeScale = settings.targetFps.toDouble() / settings.playbackFps.coerceAtLeast(1),
-                audio = audio
-            )
+            write(output.fileDescriptor ?: error("No output file descriptor"))
             output.markCompleted()
             output.uri
         }.onFailure {
@@ -1068,7 +1181,7 @@ class PrecorderEngine(private val context: Context) {
                 val file = folder?.createFile("video/mp4", fileName)
                 val pfd = file?.let { resolver.openFileDescriptor(it.uri, "w") }
                 if (file != null && pfd != null) {
-                    return OutputTarget(uri = file.uri, fileDescriptor = pfd.fileDescriptor, closeable = pfd)
+                    return OutputTarget(uri = file.uri, fileDescriptor = pfd.fileDescriptor, closeable = pfd, cleanup = { file.delete() })
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "Configured folder unavailable, fallback to MediaStore", e)
@@ -1162,7 +1275,7 @@ class PrecorderEngine(private val context: Context) {
 
     private fun estimateBitrate(fps: Int, width: Int, height: Int): Int {
         val bpp = 0.14f
-        return (bpp * fps * width * height).toInt().coerceIn(4_000_000, 80_000_000)
+        return (bpp * fps * width * height).toInt().coerceIn(MIN_BIT_RATE, MAX_BIT_RATE)
     }
 
     private class OutputTarget(
@@ -1187,5 +1300,9 @@ class PrecorderEngine(private val context: Context) {
         private const val TAG = "PrecorderEngine"
         private const val MIME_TYPE = "video/avc"
         private const val BUFFER_NOTIFY_INTERVAL_MS = 100L
+        private const val MIN_BIT_RATE = 4_000_000
+        private const val MAX_BIT_RATE = 80_000_000
+        private const val MIN_RING_BUDGET_BYTES = 128L shl 20
+        private const val STALE_COPY_MS = 10 * 60_000L
     }
 }

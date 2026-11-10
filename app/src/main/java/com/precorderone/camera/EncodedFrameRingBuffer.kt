@@ -13,12 +13,15 @@ import java.nio.ByteBuffer
  *   Frames older than [retentionUs], and frames in the way of a new one, are dropped from the oldest end.
  * - Read pointer: an export takes a [Lease], a fixed list of frames that are not overwritten until the lease is
  *   closed. Recording goes on meanwhile and the buffer stays full after a save. Should the writer run out of space
- *   while the lease blocks the oldest frames, it drops the new frame instead ([droppedFrames]).
+ *   while the lease blocks the oldest frames, it drops the new frame instead ([droppedFrames]). A lost frame leaves
+ *   a hole in time, and video frames behind it would build on a picture that is missing: the ring then starts over
+ *   as soon as the export is done, for video ([keyFrameStart]) with the next key frame.
  */
 class EncodedFrameRingBuffer internal constructor(
     private val memory: ByteBuffer,
     maxFrames: Int,
     private val retentionUs: Long,
+    private val keyFrameStart: Boolean = true,
     private val onRelease: () -> Unit
 ) {
     class Frame(val offset: Int, val size: Int, val presentationTimeUs: Long, val flags: Int) {
@@ -52,6 +55,8 @@ class EncodedFrameRingBuffer internal constructor(
     private var lease: Lease? = null
     private var leaseFirstSeq = Long.MAX_VALUE
     private var closed = false
+    // A frame was dropped: what is stored ends before a hole and must not be continued.
+    private var broken = false
 
     var droppedFrames = 0L
         private set
@@ -60,15 +65,19 @@ class EncodedFrameRingBuffer internal constructor(
     @Synchronized
     fun append(source: ByteBuffer, size: Int, presentationTimeUs: Long, frameFlags: Int): Boolean {
         if (closed || size <= 0 || size > capacity) return false
+        if (broken) {
+            val standsAlone = !keyFrameStart || (frameFlags and MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0
+            if (lease != null || !standsAlone) return drop()
+            // Everything stored lies before the hole; a clip across it would freeze and jump.
+            headSeq += count
+            head = 0
+            count = 0
+            writePos = 0
+            broken = false
+        }
         while (count > 0 && timestamps[head] < presentationTimeUs - retentionUs && evictOldest()) Unit
-        if (count == offsets.size && !evictOldest()) {
-            droppedFrames++
-            return false
-        }
-        val position = reserve(size) ?: run {
-            droppedFrames++
-            return false
-        }
+        if (count == offsets.size && !evictOldest()) return drop()
+        val position = reserve(size) ?: return drop()
         memory.duplicate().apply {
             limit(position + size)
             position(position)
@@ -121,6 +130,12 @@ class EncodedFrameRingBuffer internal constructor(
 
     private fun release() = onRelease()
 
+    private fun drop(): Boolean {
+        droppedFrames++
+        broken = true
+        return false
+    }
+
     /** Start offset for [size] bytes; drops oldest frames until they fit. Null when a lease blocks that. */
     private fun reserve(size: Int): Int? {
         while (true) {
@@ -155,21 +170,42 @@ class EncodedFrameRingBuffer internal constructor(
     companion object {
         private const val TAG = "EncodedFrameRingBuffer"
         private const val MIN_BYTES = 8 shl 20
-        private const val MAX_BYTES = 512 shl 20
+        const val MAX_BYTES = 512L shl 20
+        private const val PEAK_FACTOR = 1.6
+
+        /** Seconds of frames recorded while an export holds its lease: 3 s, more for long clips that take longer to write. */
+        private fun leaseSeconds(seconds: Double) = 3.0 + seconds * 0.05
+
+        /** Seconds of video at the target bitrate the ring needs room for: x1.6 for encoder peaks, plus [leaseSeconds]. */
+        private fun sizingSeconds(retentionUs: Long): Double {
+            val seconds = retentionUs / 1_000_000.0
+            return seconds * PEAK_FACTOR + leaseSeconds(seconds)
+        }
+
+        /** Highest bitrate at which [retentionUs] of video still fit into [maxBytes]; long buffers must stay below it. */
+        fun maxBitRate(retentionUs: Long, maxBytes: Long): Int =
+            (maxBytes * 8.0 / sizingSeconds(retentionUs)).coerceAtMost(Int.MAX_VALUE.toDouble()).toInt()
 
         /**
-         * Buffer for [retentionUs] of video at [bitRate]: x1.6 for encoder peaks above the target bitrate plus 3 s for
-         * frames recorded while an export holds its lease.
+         * Buffer for [retentionUs] of video at [bitRate], at most [maxBytes]. [keyFrameStart] is for video, where a
+         * stream can only start with a key frame; sound frames stand alone.
          */
-        fun create(bitRate: Int, fps: Int, retentionUs: Long): EncodedFrameRingBuffer? {
+        fun create(
+            bitRate: Int,
+            fps: Int,
+            retentionUs: Long,
+            maxBytes: Long = MAX_BYTES,
+            keyFrameStart: Boolean = true
+        ): EncodedFrameRingBuffer? {
             val seconds = retentionUs / 1_000_000.0
-            var bytes = (bitRate / 8.0 * (seconds * 1.6 + 3.0)).toLong().coerceIn(MIN_BYTES.toLong(), MAX_BYTES.toLong()).toInt()
-            val maxFrames = (fps.coerceAtLeast(30) * (seconds + 3.0) * 1.5).toInt()
+            val limit = maxBytes.coerceIn(MIN_BYTES.toLong(), MAX_BYTES)
+            var bytes = (bitRate / 8.0 * sizingSeconds(retentionUs)).toLong().coerceIn(MIN_BYTES.toLong(), limit).toInt()
+            val maxFrames = (fps.coerceAtLeast(30) * (seconds + leaseSeconds(seconds)) * 1.5).toInt()
             while (bytes >= MIN_BYTES) {
                 try {
                     val shared = SharedMemory.create("precorder-ring", bytes)
                     val memory = shared.mapReadWrite()
-                    return EncodedFrameRingBuffer(memory, maxFrames, retentionUs) {
+                    return EncodedFrameRingBuffer(memory, maxFrames, retentionUs, keyFrameStart) {
                         SharedMemory.unmap(memory)
                         shared.close()
                     }

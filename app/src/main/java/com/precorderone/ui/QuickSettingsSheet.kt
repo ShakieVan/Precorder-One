@@ -5,6 +5,7 @@ import android.content.Intent
 import android.hardware.camera2.CameraManager
 import android.view.LayoutInflater
 import android.view.View
+import com.google.android.material.bottomsheet.BottomSheetBehavior
 import com.google.android.material.bottomsheet.BottomSheetDialog
 import com.google.android.material.chip.Chip
 import com.google.android.material.chip.ChipGroup
@@ -35,6 +36,9 @@ class QuickSettingsSheet(
             context.startActivity(Intent(context, SettingsActivity::class.java))
         }
         dialog.setContentView(binding.root)
+        // Open at full height: half open, the lower options would be hidden below the screen edge.
+        dialog.behavior.skipCollapsed = true
+        dialog.behavior.state = BottomSheetBehavior.STATE_EXPANDED
         dialog.show()
     }
 
@@ -60,6 +64,14 @@ class QuickSettingsSheet(
         }
         binding.postRollGroup.fill(postRollOptions, settings.postRollSeconds.toString()) {
             update(binding) { copy(postRollSeconds = it.toInt()) }
+        }
+        // Only read when a clip is saved: stored without restarting the camera, so the buffer stays filled.
+        val timecodeOptions = listOf(
+            "off" to context.getString(R.string.quick_post_roll_off),
+            "on" to context.getString(R.string.quick_timecode_on)
+        )
+        binding.timecodeGroup.fill(timecodeOptions, if (repository.burnTimecode()) "on" else "off") {
+            repository.setBurnTimecode(it == "on")
         }
         binding.aspectGroup.fill(ASPECTS.map { it to it }, settings.aspectRatio) {
             update(binding) { copy(aspectRatio = it) }
@@ -101,7 +113,7 @@ class QuickSettingsSheet(
 
     companion object {
         private val PLAYBACK_FPS = listOf(24, 30, 60)
-        private val LOOP_SECONDS = listOf(5, 10)
+        private val LOOP_SECONDS = listOf(5, 10, 30, 60)
         private val POST_ROLL_SECONDS = listOf(0, 1, 2, 3, 5)
         private val ASPECTS = listOf("16:9", "4:3")
     }

@@ -11,8 +11,8 @@ import java.nio.ByteBuffer
 class EncodedFrameRingBufferTest {
     private var released = 0
 
-    private fun ring(capacity: Int, maxFrames: Int = 64, retentionUs: Long = 1_000_000L) =
-        EncodedFrameRingBuffer(ByteBuffer.allocate(capacity), maxFrames, retentionUs) { released++ }
+    private fun ring(capacity: Int, maxFrames: Int = 64, retentionUs: Long = 1_000_000L, keyFrameStart: Boolean = true) =
+        EncodedFrameRingBuffer(ByteBuffer.allocate(capacity), maxFrames, retentionUs, keyFrameStart) { released++ }
 
     /** Frame [index] is filled with its own index, so overwritten or misplaced bytes show up. */
     private fun frame(index: Int, size: Int): ByteBuffer =
@@ -66,10 +66,71 @@ class EncodedFrameRingBufferTest {
         assertIntact(lease)
         lease.close()
 
-        // After the export the writer continues normally and the buffer is full again right away.
-        repeat(30) { assertTrue(ring.add(200 + it, 100)) }
+        // After the export the writer continues with the next key frame and the buffer fills up again.
+        repeat(30) { assertTrue(ring.add(200 + it, 100, key = it == 0)) }
         assertTrue(ring.durationUs() >= 50_000L)
         ring.beginRead()!!.use { assertIntact(it) }
+    }
+
+    @Test
+    fun startsOverWithKeyFrameAfterLostFrames() {
+        val ring = ring(capacity = 2_000, retentionUs = Long.MAX_VALUE / 2)
+        repeat(10) { ring.add(it, 100, key = it == 0) }
+        val lease = ring.beginRead()!!
+        // The export takes so long that the ring runs full: frames 20..24 are lost.
+        repeat(15) { ring.add(10 + it, 100) }
+        assertEquals(5L, ring.droppedFrames)
+        lease.close()
+
+        // Frames that build on a lost one are useless, and nothing may be stored behind the hole in time.
+        assertTrue(!ring.add(25, 100))
+        assertTrue(!ring.add(26, 100))
+        assertTrue(ring.add(27, 100, key = true))
+        assertTrue(ring.add(28, 100))
+        assertEquals(10_000L, ring.durationUs())
+        ring.beginRead()!!.use { fresh ->
+            assertEquals(listOf(270_000L, 280_000L), fresh.frames.map { it.presentationTimeUs })
+            assertTrue(fresh.frames.first().isKeyFrame)
+            assertIntact(fresh)
+        }
+    }
+
+    @Test
+    fun exportDuringTheHoleStillGetsTheOldFrames() {
+        val ring = ring(capacity = 1_000, retentionUs = Long.MAX_VALUE / 2)
+        repeat(5) { ring.add(it, 100, key = it == 0) }
+        val first = ring.beginRead()!!
+        repeat(10) { ring.add(5 + it, 100) }
+        assertTrue(ring.droppedFrames > 0)
+        first.close()
+        // No key frame has arrived yet: what is stored is still one unbroken stretch and may be saved.
+        ring.beginRead()!!.use { second ->
+            assertEquals(0L, second.frames.first().presentationTimeUs)
+            assertEquals(90_000L, second.frames.last().presentationTimeUs)
+            assertIntact(second)
+        }
+    }
+
+    @Test
+    fun soundContinuesWithoutKeyFrame() {
+        val ring = ring(capacity = 1_000, retentionUs = Long.MAX_VALUE / 2, keyFrameStart = false)
+        repeat(5) { ring.add(it, 100) }
+        val lease = ring.beginRead()!!
+        repeat(10) { ring.add(5 + it, 100) }
+        assertTrue(ring.droppedFrames > 0)
+        lease.close()
+        assertTrue(ring.add(15, 100))
+        ring.beginRead()!!.use { assertEquals(listOf(150_000L), it.frames.map { frame -> frame.presentationTimeUs }) }
+    }
+
+    @Test
+    fun longBufferLimitsTheBitRateToItsMemory() {
+        val oneMinute = 61_000_000L
+        val limit = EncodedFrameRingBuffer.maxBitRate(oneMinute, EncodedFrameRingBuffer.MAX_BYTES)
+        // 512 MB hold a minute at roughly 40 Mbit/s once the reserve for encoder peaks is taken off.
+        assertTrue("limit $limit", limit in 35_000_000..45_000_000)
+        assertTrue(EncodedFrameRingBuffer.maxBitRate(11_000_000L, EncodedFrameRingBuffer.MAX_BYTES) > 80_000_000)
+        assertTrue(EncodedFrameRingBuffer.maxBitRate(oneMinute, EncodedFrameRingBuffer.MAX_BYTES / 2) in limit / 2 - 1..limit / 2 + 1)
     }
 
     @Test

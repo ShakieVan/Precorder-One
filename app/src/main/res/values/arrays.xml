@@ -2,10 +2,14 @@
     <string-array name="loop_entries">
         <item>5 Sekunden</item>
         <item>10 Sekunden</item>
+        <item>30 Sekunden</item>
+        <item>60 Sekunden</item>
     </string-array>
     <string-array name="loop_values">
         <item>5</item>
         <item>10</item>
+        <item>30</item>
+        <item>60</item>
     </string-array>
 
     <string-array name="post_roll_entries">

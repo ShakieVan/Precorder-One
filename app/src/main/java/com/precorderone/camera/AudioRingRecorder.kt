@@ -12,8 +12,9 @@ import android.util.Log
 
 /**
  * Microphone -> AAC encoder -> its own ring buffer, on its own thread beside the video pipeline (no shared locks,
- * no work on the video path). Timestamps use the camera's clock ([bootTimeClock] for SENSOR_INFO_TIMESTAMP_SOURCE
- * REALTIME), taken from AudioRecord.getTimestamp so sound and picture stay in sync also after hours of buffering.
+ * no work on the video path). Timestamps use the clock of the video frames ([bootTimeClock] or CLOCK_MONOTONIC, see
+ * PrecorderEngine.startAudio), taken from AudioRecord.getTimestamp so sound and picture stay in sync also after hours
+ * of buffering.
  */
 internal class AudioRingRecorder(private val retentionUs: Long, private val bootTimeClock: Boolean) {
     @Volatile
@@ -56,7 +57,7 @@ internal class AudioRingRecorder(private val retentionUs: Long, private val boot
             record.release()
             return false
         }
-        ring = EncodedFrameRingBuffer.create(BIT_RATE, AAC_FRAMES_PER_SECOND, retentionUs) ?: run {
+        ring = EncodedFrameRingBuffer.create(BIT_RATE, AAC_FRAMES_PER_SECOND, retentionUs, keyFrameStart = false) ?: run {
             codec.release()
             record.release()
             return false
