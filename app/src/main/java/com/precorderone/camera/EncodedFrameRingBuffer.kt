@@ -170,7 +170,8 @@ class EncodedFrameRingBuffer internal constructor(
     companion object {
         private const val TAG = "EncodedFrameRingBuffer"
         private const val MIN_BYTES = 8 shl 20
-        const val MAX_BYTES = 512L shl 20
+        // Enough for the longest buffer (a minute plus post-roll) at the highest bitrate the app uses, 80 Mbit/s.
+        const val MAX_BYTES = 1280L shl 20
         private const val PEAK_FACTOR = 1.6
 
         /** Seconds of frames recorded while an export holds its lease: 3 s, more for long clips that take longer to write. */

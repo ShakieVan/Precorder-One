@@ -3,8 +3,9 @@
 ## Neu
 
 - **Puffer bis zu einer Minute:** Die Puffer-Länge lässt sich auf 5, 10, 30 oder 60 Sekunden stellen (Schnellmenü und
-  Einstellungen → Aufnahme). Der Puffer liegt weiterhin im Arbeitsspeicher, höchstens 512 MB. Bei sehr hoher
-  Auflösung oder Bildrate senkt die App bei langen Puffern die Datenrate so weit, dass die volle Länge hineinpasst.
+  Einstellungen → Aufnahme). Der Puffer liegt weiterhin im Arbeitsspeicher und behält seine volle Datenrate: Eine
+  Minute belegt je nach Auflösung und Bildrate etwa 0,5 bis gut 1 GB. Nur auf Handys mit wenig Arbeitsspeicher
+  (unter etwa 5 GB) senkt die App bei den höchsten Einstellungen die Datenrate, damit die volle Länge hineinpasst.
 - **Timecode im Bild:** Unten links steht die Laufzeit des Clips als Min:Sek:Millisekunden, zum Beispiel `00:03:333`,
   beginnend bei `00:00:000` auf dem ersten Bild. Gezählt wird die Zeit, die vor der Kamera wirklich vergangen ist –
   in Zeitlupe läuft der Timecode also entsprechend langsamer (bei 240 fps rund 4 ms pro Bild). Er steht aufrecht
@@ -14,7 +15,8 @@
 - **Speichern mit Timecode dauert länger:** Der Timecode wird erst beim Speichern eingebrannt (der Clip wird dafür neu
   kodiert); die laufende Aufnahme bleibt unberührt und geht währenddessen ohne Lücke weiter. Oben läuft
   „SPEICHERT 42 %“ mit. Richtwerte vom Galaxy S21 und S10: 5 Sekunden in höchster Auflösung brauchen etwa 5 Sekunden,
-  eine Minute etwa 50 Sekunden, 5 Sekunden mit 240 fps etwa 15 Sekunden. Ohne Timecode wird wie bisher sofort
+  eine Minute etwa 50 Sekunden, 5 Sekunden mit 240 fps etwa 15 Sekunden. Eine ganze Minute mit 240 fps sind über
+  14 000 Bilder: Das dauert 4 bis 6 Minuten, und das Handy wird dabei warm. Ohne Timecode wird wie bisher sofort
   gespeichert. Gelingt das Einbrennen einmal nicht, wird der Clip trotzdem gespeichert, ohne Timecode und mit Hinweis.
 
 ## Behoben

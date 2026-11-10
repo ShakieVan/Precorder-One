@@ -743,7 +743,9 @@ class PrecorderEngine(private val context: Context) {
         formatHeight = height
         codecUsesSurfaceInput = useSurfaceInput
 
-        // A long buffer has to fit into memory: beyond that, the bitrate gives way, not the length.
+        // A long buffer keeps its full bitrate and takes the memory it needs for that (a minute at 80 Mbit/s is a
+        // good gigabyte). Only where the phone does not have that much to give does the bitrate give way, as the
+        // last resort before a buffer that is shorter than set.
         val ringBytes = ringBudgetBytes()
         val wantedBitRate = estimateBitrate(settings.targetFps, formatWidth, formatHeight)
         val bitRate = min(wantedBitRate, EncodedFrameRingBuffer.maxBitRate(retentionUs, ringBytes))
@@ -780,11 +782,14 @@ class PrecorderEngine(private val context: Context) {
         ringBuffer = EncodedFrameRingBuffer.create(bitRate, settings.targetFps, retentionUs, ringBytes)
     }
 
-    /** Memory the video ring may take: a tenth of the device's RAM, at most 512 MB. */
+    /**
+     * Memory the video ring may take: up to a quarter of the device's RAM. From about 5 GB of RAM on that covers
+     * every setting ([EncodedFrameRingBuffer.MAX_BYTES]), so the bitrate is never touched there.
+     */
     private fun ringBudgetBytes(): Long {
         val info = ActivityManager.MemoryInfo()
         (context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager).getMemoryInfo(info)
-        return (info.totalMem / 10).coerceIn(MIN_RING_BUDGET_BYTES, EncodedFrameRingBuffer.MAX_BYTES)
+        return (info.totalMem / 4).coerceIn(MIN_RING_BUDGET_BYTES, EncodedFrameRingBuffer.MAX_BYTES)
     }
 
     private fun encodeImage(image: ImageProxy, settings: PrecorderSettings) {

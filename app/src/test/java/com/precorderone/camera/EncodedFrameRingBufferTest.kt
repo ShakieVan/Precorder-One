@@ -124,13 +124,20 @@ class EncodedFrameRingBufferTest {
     }
 
     @Test
-    fun longBufferLimitsTheBitRateToItsMemory() {
+    fun fullBitRateFitsTheLongestBufferAndOnlyLittleMemoryLimitsIt() {
+        // The longest buffer there is: a minute, its extra second and the longest post-roll the settings accept.
+        val longest = 71_000_000L
+        // With the memory a phone with enough RAM may use, the highest bitrate of the app (80 Mbit/s) is never cut.
+        assertTrue(EncodedFrameRingBuffer.maxBitRate(longest, EncodedFrameRingBuffer.MAX_BYTES) >= 80_000_000)
+
+        // A phone that can only spare 512 MB holds a minute at roughly 40 Mbit/s once the reserve for encoder peaks
+        // is taken off; that limit follows the memory.
         val oneMinute = 61_000_000L
-        val limit = EncodedFrameRingBuffer.maxBitRate(oneMinute, EncodedFrameRingBuffer.MAX_BYTES)
-        // 512 MB hold a minute at roughly 40 Mbit/s once the reserve for encoder peaks is taken off.
+        val small = 512L shl 20
+        val limit = EncodedFrameRingBuffer.maxBitRate(oneMinute, small)
         assertTrue("limit $limit", limit in 35_000_000..45_000_000)
-        assertTrue(EncodedFrameRingBuffer.maxBitRate(11_000_000L, EncodedFrameRingBuffer.MAX_BYTES) > 80_000_000)
-        assertTrue(EncodedFrameRingBuffer.maxBitRate(oneMinute, EncodedFrameRingBuffer.MAX_BYTES / 2) in limit / 2 - 1..limit / 2 + 1)
+        assertTrue(EncodedFrameRingBuffer.maxBitRate(oneMinute, small / 2) in limit / 2 - 1..limit / 2 + 1)
+        assertTrue(EncodedFrameRingBuffer.maxBitRate(11_000_000L, small) > 80_000_000)
     }
 
     @Test
