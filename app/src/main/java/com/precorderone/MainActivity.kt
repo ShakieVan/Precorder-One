@@ -38,6 +38,7 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import com.google.android.material.snackbar.Snackbar
 import com.precorderone.camera.ClipOverlay
+import com.precorderone.camera.FpsCatalog
 import com.precorderone.camera.LensOption
 import com.precorderone.camera.PrecorderEngine
 import com.precorderone.camera.SpeedLabel
@@ -177,7 +178,7 @@ class MainActivity : AppCompatActivity() {
         }
         engine.onProfileFallback = { msg -> runOnUiThread { showMessage(msg) } }
         // Shown in the diagnostics line instead of a toast: toasts sit right on top of the lens bar.
-        engine.onPipelineChanged = { pipeline, cameraId ->
+        engine.onPipelineChanged = { pipeline, cameraId, size ->
             runOnUiThread {
                 val name = getString(
                     when (pipeline) {
@@ -186,7 +187,9 @@ class MainActivity : AppCompatActivity() {
                         PrecorderEngine.CapturePipeline.CAMERAX -> R.string.pipeline_camerax
                     }
                 )
-                pipelineInfo = getString(R.string.debug_pipeline, name, cameraId ?: "?")
+                // With the picture size: a recording that looks blurred may simply be a small one.
+                pipelineInfo = getString(R.string.debug_pipeline, name, cameraId ?: "?") +
+                    (size?.let { " · ${it.width}×${it.height}" } ?: "")
                 updateBufferUi()
             }
         }
@@ -293,7 +296,7 @@ class MainActivity : AppCompatActivity() {
         REQUIRED_PERMISSIONS.all { ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED }
 
     private fun bindCamera(zoomRatio: Float? = null) {
-        val settings = settingsRepository.load()
+        val settings = withOfferedFps(settingsRepository.load())
         showDiagnostics = settingsRepository.showDiagnostics()
         binding.debugFpsText.visibility = if (showDiagnostics) View.VISIBLE else View.GONE
         if (hasActiveBinding && settings == lastBoundSettings) {
@@ -315,6 +318,34 @@ class MainActivity : AppCompatActivity() {
         updateProfileChip(settings)
         updateFocusUi()
         updateBufferUi()
+    }
+
+    /**
+     * [settings] with a frame rate the camera in use can record at. A rate it does not offer (60 fps, the preset, on
+     * many phones; 240 fps after switching to the front camera) is replaced by the next lower one and stored, so the
+     * chip, the slow-motion factor and the encoder all work with the rate that is really recorded.
+     */
+    private fun withOfferedFps(settings: PrecorderSettings): PrecorderSettings {
+        val manager = getSystemService(CAMERA_SERVICE) as CameraManager
+        val chars = runCatching {
+            val wanted = if (settings.lensFacing == CameraSelector.LENS_FACING_FRONT) {
+                CameraCharacteristics.LENS_FACING_FRONT
+            } else {
+                CameraCharacteristics.LENS_FACING_BACK
+            }
+            val id = settings.cameraId ?: manager.cameraIdList.first { id ->
+                manager.getCameraCharacteristics(id).get(CameraCharacteristics.LENS_FACING) == wanted
+            }
+            manager.getCameraCharacteristics(id)
+        }.getOrNull() ?: return settings
+        val fps = FpsCatalog.closest(chars, settings.targetFps)
+        if (fps == settings.targetFps) return settings
+        // Nobody chose the preset: replace it without a word.
+        val chosen = settingsRepository.hasStoredFps()
+        val offered = settings.copy(targetFps = fps)
+        settingsRepository.save(offered)
+        if (chosen) showMessage(getString(R.string.fps_not_offered, settings.targetFps, fps))
+        return offered
     }
 
     /** Reopens the camera after the stored camera ID changed (lens bar, front/back switch). */

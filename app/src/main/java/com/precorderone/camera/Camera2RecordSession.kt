@@ -334,7 +334,15 @@ internal class Camera2RecordSession(
         private const val MAX_OPEN_RETRIES = 3
         private const val OPEN_RETRY_DELAY_MS = 300L
 
-        fun chooseProfile(context: Context, targetFps: Int, lensFacing: Int, preferredCameraId: String?, aspect: String): Profile? {
+        /** [encoderManages]: whether the video encoder takes pictures of that size at that frame rate. */
+        fun chooseProfile(
+            context: Context,
+            targetFps: Int,
+            lensFacing: Int,
+            preferredCameraId: String?,
+            aspect: String,
+            encoderManages: (Size, Int) -> Boolean = { _, _ -> true }
+        ): Profile? {
             val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
             val cameraId = preferredCameraId ?: manager.cameraIdList.firstOrNull { id ->
                 val chars = runCatching { manager.getCameraCharacteristics(id) }.getOrNull() ?: return@firstOrNull false
@@ -355,27 +363,16 @@ internal class Camera2RecordSession(
                 ?: return null
 
             val targetRatio = if (aspect == "4:3") 4f / 3f else 16f / 9f
-            val frameDurationBudgetNs = 1_000_000_000L / targetFps.coerceAtLeast(1)
-
-            // Prefer sizes that can realistically sustain target fps according to camera metadata.
-            val fpsSafeSizes = sizes.filter { size ->
-                val minDuration = runCatching {
-                    map.getOutputMinFrameDuration(MediaRecorder::class.java, size)
-                }.getOrDefault(0L)
-                minDuration <= 0L || minDuration <= frameDurationBudgetNs
+            // The rate the camera really runs at: where it does not offer the rate asked for (60 fps on many
+            // phones), the range chosen above ends below it, and the picture is chosen for that rate.
+            val fps = minOf(targetFps, chosenRange.upper)
+            val candidates = sizes.map { size ->
+                val minDuration = runCatching { map.getOutputMinFrameDuration(MediaRecorder::class.java, size) }.getOrDefault(0L)
+                RecordSize.Candidate(size.width, size.height, minDuration)
             }
-
-            val candidateSizes = if (fpsSafeSizes.isNotEmpty()) fpsSafeSizes else sizes
-            val chosenSize = candidateSizes.sortedWith(
-                compareBy<Size> {
-                    val ratio = it.width.toFloat() / it.height.toFloat()
-                    abs(ratio - targetRatio)
-                }.thenBy { size ->
-                    // For high fps, prioritize smaller resolutions first to reduce ISP/encoder pressure.
-                    if (targetFps >= 60) size.width * size.height else -(size.width * size.height)
-                }
-            ).first()
-            return Profile(cameraId, chars, chosenSize, chosenRange)
+            val chosen = RecordSize.choose(candidates, targetRatio, fps) { encoderManages(Size(it.width, it.height), fps) }
+                ?: return null
+            return Profile(cameraId, chars, Size(chosen.width, chosen.height), chosenRange)
         }
     }
 }

@@ -26,6 +26,7 @@
     <string name="exposure_zero">±0 EV</string>
     <string name="exposure_value">%1$+.1f EV</string>
     <string name="zoom_set_failed">Zoom aktuell nicht verfügbar</string>
+    <string name="fps_not_offered">%1$d fps bietet diese Kamera nicht. Aufnahme mit %2$d fps.</string>
     <string name="debug_fps_initial">FPS: --.-</string>
     <string name="debug_fps">Src %1$.1f | Q %2$.1f | Enc %3$.1f | Drop %4$.0f%% | Ziel %5$d</string>
     <string name="debug_pipeline">%1$s · Kamera %2$s</string>
@@ -73,7 +74,7 @@
     <string name="pref_storage_default">Interner Speicher/DCIM/Precorder-One</string>
     <string name="pref_storage_internal">Interner Speicher</string>
     <string name="pref_diagnostics_title">Diagnose anzeigen</string>
-    <string name="pref_diagnostics_summary">FPS, Aufnahmepfad und aktives Objektiv in der Hauptansicht</string>
+    <string name="pref_diagnostics_summary">FPS, Aufnahmepfad, Auflösung und aktives Objektiv in der Hauptansicht</string>
     <string name="lens_button_description">Objektiv %1$s</string>
 
     <!-- App-Update (GitHub-Releases) -->

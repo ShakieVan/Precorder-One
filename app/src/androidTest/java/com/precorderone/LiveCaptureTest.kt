@@ -39,7 +39,15 @@ class LiveCaptureTest {
     private val instrumentation get() = InstrumentationRegistry.getInstrumentation()
     private val context get() = instrumentation.targetContext
 
-    private class Clip(val uri: Uri, val frames: Int, val durationUs: Long, val longestGapUs: Long, val hasSound: Boolean)
+    private class Clip(
+        val uri: Uri,
+        val frames: Int,
+        val durationUs: Long,
+        val longestGapUs: Long,
+        val hasSound: Boolean,
+        val width: Int,
+        val height: Int
+    )
 
     @Test
     fun savesClipsFromTheRunningCamera() {
@@ -79,17 +87,22 @@ class LiveCaptureTest {
                         "buffer not ready, status: ${status(scenario)}",
                         waitUntil((loop + 25) * 1000L) { status(scenario) == ready }
                     )
-                    Log.i(TAG, "READY after ${SystemClock.elapsedRealtime() - fillStart} ms (loop $loop s, $fps -> $playback fps, timecode $timecode $corner, label $label, $lens camera, sound $audio)")
+                    // A rate the camera does not offer is replaced when it starts (60 fps becomes 30 on a Galaxy S21).
+                    val recordFps = PreferenceManager.getDefaultSharedPreferences(context)
+                        .getString("target_fps", null)?.toIntOrNull() ?: fps
+                    Log.i(TAG, "READY after ${SystemClock.elapsedRealtime() - fillStart} ms (loop $loop s, $fps -> $playback fps, recording at $recordFps fps, timecode $timecode $corner, label $label, $lens camera, sound $audio)")
 
                     val first = saveClip(scenario, "FIRST")
                     saved += first
                     // Slow motion stretches the clip; the camera may also deliver fewer pictures than asked for in a
                     // dark room, so the number of frames only has a loose lower bound.
-                    val stretch = fps.toDouble() / playback
+                    val stretch = recordFps.toDouble() / playback
                     val seconds = first.durationUs / 1_000_000.0 / stretch
                     assertTrue("clip covers $seconds s", seconds > loop * 0.8 && seconds < loop + 2)
                     assertTrue("only ${first.frames} frames", first.frames >= loop * 10)
-                    assertEquals("sound track", audio && fps == playback, first.hasSound)
+                    assertEquals("sound track", audio && recordFps == playback, first.hasSound)
+                    // No setting records less than 720p on a phone of today; 256x144 once slipped through at 60 fps.
+                    assertTrue("picture only ${first.width}x${first.height}", minOf(first.width, first.height) >= 720)
 
                     // The buffer must not have started over while the first clip was saved ...
                     assertEquals(ready, status(scenario))
@@ -127,7 +140,7 @@ class LiveCaptureTest {
         val clip = read(uri!!)
         Log.i(
             TAG,
-            "$label saved in $saveMs ms: ${clip.frames} frames, ${clip.durationUs / 1000} ms long, longest gap " +
+            "$label saved in $saveMs ms: ${clip.width}x${clip.height}, ${clip.frames} frames, ${clip.durationUs / 1000} ms long, longest gap " +
                 "${clip.longestGapUs / 1000.0} ms, sound ${clip.hasSound}, status afterwards: ${status(scenario)}, " +
                 "shown while saving: ${shown.take(4)}${if (shown.size > 4) " … ${shown.last()}" else ""}, $uri"
         )
@@ -163,7 +176,9 @@ class LiveCaptureTest {
     private fun read(uri: Uri): Clip {
         val extractor = MediaExtractor().apply { setDataSource(context, uri, null) }
         val mimes = (0 until extractor.trackCount).map { extractor.getTrackFormat(it).getString(MediaFormat.KEY_MIME)!! }
-        extractor.selectTrack(mimes.indexOfFirst { it.startsWith("video/") })
+        val video = mimes.indexOfFirst { it.startsWith("video/") }
+        val videoFormat = extractor.getTrackFormat(video)
+        extractor.selectTrack(video)
         var frames = 0
         var lastUs = 0L
         var longestGapUs = 0L
@@ -174,7 +189,10 @@ class LiveCaptureTest {
             extractor.advance()
         }
         extractor.release()
-        return Clip(uri, frames, lastUs, longestGapUs, mimes.any { it.startsWith("audio/") })
+        return Clip(
+            uri, frames, lastUs, longestGapUs, mimes.any { it.startsWith("audio/") },
+            videoFormat.getInteger(MediaFormat.KEY_WIDTH), videoFormat.getInteger(MediaFormat.KEY_HEIGHT)
+        )
     }
 
     private companion object {

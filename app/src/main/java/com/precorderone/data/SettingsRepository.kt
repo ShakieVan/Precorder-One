@@ -24,6 +24,9 @@ class SettingsRepository(context: Context) {
         recordAudio = prefs.getBoolean(KEY_RECORD_AUDIO, false)
     )
 
+    /** False while the frame rate is still the preset, which not every camera offers. */
+    fun hasStoredFps(): Boolean = prefs.contains(KEY_TARGET_FPS)
+
     /** UI-only option, kept out of [PrecorderSettings] so toggling it never restarts the camera. */
     fun showDiagnostics(): Boolean = prefs.getBoolean(KEY_SHOW_DIAGNOSTICS, false)
 
