@@ -25,7 +25,8 @@ import java.io.RandomAccessFile
  * The save path with timecode on real codecs and the real graphics chip: encoder -> ring -> real-time copy ->
  * TimecodeBurner -> MP4. The clips land in Download/precorder_export_test_timecode*.mp4 to look at them as well.
  *
- * The test picture never gets brighter than mid grey, so anything close to white is the timecode.
+ * The test picture never gets brighter than mid grey and has no colour, so anything close to white is burnt-in text
+ * and anything red is the dot of the speed label.
  */
 @RunWith(AndroidJUnit4::class)
 class TimecodeBurnerTest {
@@ -38,7 +39,10 @@ class TimecodeBurnerTest {
         val uri = newClip("timecode_landscape")
         var lastProgress = 0f
         write(uri) { fd ->
-            TimecodeBurner.burn(source, fd, orientationHint = 0, timeScale = 2.0, frameRate = 15, bitRate = 3_000_000) { lastProgress = it }
+            TimecodeBurner.burn(
+                source, fd, orientationHint = 0, timeScale = 2.0, frameRate = 15, bitRate = 3_000_000,
+                overlay = ClipOverlay(Corner.BOTTOM_LEFT, null)
+            ) { lastProgress = it }
         }
         val original = decode(Uri.fromFile(source))
         val burned = decode(uri)
@@ -66,24 +70,104 @@ class TimecodeBurnerTest {
         assertNotEquals(burned.first().pattern(box), burned.last().pattern(box))
     }
 
-    /** Phone held in portrait: the stored frame stays landscape, the text is turned to lie along its right edge. */
+    /**
+     * Phone held in portrait, timecode where it goes unless changed (top left): the stored frame stays landscape, the
+     * text is turned to lie along its left edge.
+     */
     @Test
     fun turnsTheTimecodeForPortraitClips() {
         val source = sourceClip(fps = 30, frameCount = 30)
         val uri = newClip("timecode_portrait")
         write(uri) { fd ->
-            TimecodeBurner.burn(source, fd, orientationHint = 90, timeScale = 1.0, frameRate = 30, bitRate = 3_000_000)
+            TimecodeBurner.burn(
+                source, fd, orientationHint = 90, timeScale = 1.0, frameRate = 30, bitRate = 3_000_000,
+                overlay = ClipOverlay(Corner.of(null), null)
+            )
         }
         val burned = decode(uri)
         source.delete()
 
         assertEquals(30, burned.size)
         assertEquals(90, rotationOf(uri))
-        // Bottom left of the upright picture is the bottom right of the stored frame.
-        val box = Region(590, 230, 640, 360)
+        // Top left of the upright picture is the bottom left of the stored frame.
+        val box = Region(0, 230, 50, 360)
         burned.forEachIndexed { index, frame ->
             assertTrue("frame $index: timecode missing (${frame.white(box)})", frame.white(box) > 40)
             assertEquals("frame $index: white outside the box", 0, frame.whiteOutside(box))
+            assertTrue("frame $index: marker ${frame.mean(MARKER)}", frame.mean(MARKER) > 130)
+        }
+    }
+
+    /**
+     * Slow motion with the timecode top right: the speed label moves to the top left, and its dot is there for half
+     * a second and gone for half a second of the clip as it plays.
+     */
+    @Test
+    fun speedLabelTakesTheOtherUpperCornerAndItsDotBlinks() {
+        val source = sourceClip(fps = 30, frameCount = 45)
+        val uri = newClip("timecode_slowmo_label")
+        write(uri) { fd ->
+            TimecodeBurner.burn(
+                source, fd, orientationHint = 0, timeScale = 2.0, frameRate = 15, bitRate = 3_000_000,
+                overlay = ClipOverlay(Corner.TOP_RIGHT, "Zeitlupe 2×")
+            )
+        }
+        val burned = decode(uri)
+        source.delete()
+
+        assertEquals(45, burned.size)
+        val timecode = Region(440, 0, 640, 60)
+        val label = Region(0, 0, 240, 60)
+        val dot = Region(4, 6, 36, 38)
+        var shown = 0
+        var hidden = 0
+        burned.forEachIndexed { index, frame ->
+            assertTrue("frame $index: timecode missing (${frame.white(timecode)})", frame.white(timecode) > 40)
+            assertTrue("frame $index: label missing (${frame.white(label)})", frame.white(label) > 40)
+            assertEquals("frame $index: white outside the boxes", 0, frame.whiteOutside(timecode, label))
+            assertEquals("frame $index: red outside the dot", 0, frame.redOutside(dot))
+            // Right at the change the clip's own rounding of the time decides; those frames prove nothing.
+            val phaseUs = frame.ptsUs % 500_000L
+            val atTheChange = frame.ptsUs > 20_000L && (phaseUs < 20_000L || phaseUs > 480_000L)
+            if (!atTheChange) {
+                if (frame.ptsUs / 500_000L % 2L == 0L) {
+                    assertTrue("frame $index at ${frame.ptsUs} us: dot missing (${frame.red(dot)})", frame.red(dot) >= 4)
+                    shown++
+                } else {
+                    assertEquals("frame $index at ${frame.ptsUs} us: dot shown", 0, frame.red(dot))
+                    hidden++
+                }
+            }
+        }
+        // 3 s of playback: on, off, on, off, on, off.
+        assertTrue("dot shown in $shown frames, hidden in $hidden", shown >= 15 && hidden >= 15)
+    }
+
+    /** Time lapse without timecode: only the label, top right, and the clip runs twice as fast. */
+    @Test
+    fun speedLabelAloneGoesTopRight() {
+        val source = sourceClip(fps = 30, frameCount = 30)
+        val uri = newClip("timecode_timelapse_label")
+        write(uri) { fd ->
+            TimecodeBurner.burn(
+                source, fd, orientationHint = 0, timeScale = 0.5, frameRate = 60, bitRate = 3_000_000,
+                overlay = ClipOverlay(null, "Zeitraffer 2×")
+            )
+        }
+        val original = decode(Uri.fromFile(source))
+        val burned = decode(uri)
+        source.delete()
+
+        assertEquals(30, burned.size)
+        val label = Region(400, 0, 640, 60)
+        val dot = Region(456, 6, 500, 38)
+        burned.forEachIndexed { index, frame ->
+            assertEquals("time of frame $index", (original[index].ptsUs - original[0].ptsUs) * 0.5, frame.ptsUs.toDouble(), 1_000.0)
+            assertTrue("frame $index: label missing (${frame.white(label)})", frame.white(label) > 40)
+            assertEquals("frame $index: white outside the box", 0, frame.whiteOutside(label))
+            // The whole clip plays within the first half second: the dot is there all the time.
+            assertTrue("frame $index: dot missing (${frame.red(dot)})", frame.red(dot) >= 4)
+            assertEquals("frame $index: red outside the dot", 0, frame.redOutside(dot))
             assertTrue("frame $index: marker ${frame.mean(MARKER)}", frame.mean(MARKER) > 130)
         }
     }
@@ -93,7 +177,10 @@ class TimecodeBurnerTest {
         val source = sourceClip(fps = 30, frameCount = 60, toneSeconds = 2)
         val uri = newClip("timecode_sound")
         write(uri) { fd ->
-            TimecodeBurner.burn(source, fd, orientationHint = 0, timeScale = 1.0, frameRate = 30, bitRate = 3_000_000)
+            TimecodeBurner.burn(
+                source, fd, orientationHint = 0, timeScale = 1.0, frameRate = 30, bitRate = 3_000_000,
+                overlay = ClipOverlay(Corner.TOP_LEFT, null)
+            )
         }
         val before = audioSamples(Uri.fromFile(source))
         val after = audioSamples(uri)
@@ -180,9 +267,23 @@ class TimecodeBurnerTest {
         fun contains(x: Int, y: Int) = x in left until right && y in top until bottom
     }
 
-    /** Brightness of one decoded frame, one byte per pixel. */
-    private inner class Frame(val ptsUs: Long, private val luma: ByteArray) {
+    /** One decoded frame: brightness, one byte per pixel, and the red part of its colour, one byte per 2x2 pixels. */
+    private inner class Frame(val ptsUs: Long, private val luma: ByteArray, private val redness: ByteArray) {
         private fun at(x: Int, y: Int) = luma[y * width + x].toInt() and 0xFF
+        private fun isRed(x: Int, y: Int) = (redness[y * (width / 2) + x].toInt() and 0xFF) > RED
+
+        /** Red colour samples of [region], which is given in pixels like all regions. */
+        fun red(region: Region): Int {
+            var count = 0
+            for (y in region.top / 2 until region.bottom / 2) for (x in region.left / 2 until region.right / 2) if (isRed(x, y)) count++
+            return count
+        }
+
+        fun redOutside(region: Region): Int {
+            var count = 0
+            for (y in 0 until height / 2) for (x in 0 until width / 2) if (!region.contains(x * 2, y * 2) && isRed(x, y)) count++
+            return count
+        }
 
         fun mean(region: Region): Double {
             var sum = 0L
@@ -196,9 +297,9 @@ class TimecodeBurnerTest {
             return count
         }
 
-        fun whiteOutside(region: Region): Int {
+        fun whiteOutside(vararg regions: Region): Int {
             var count = 0
-            for (y in 0 until height) for (x in 0 until width) if (!region.contains(x, y) && at(x, y) > WHITE) count++
+            for (y in 0 until height) for (x in 0 until width) if (regions.none { it.contains(x, y) } && at(x, y) > WHITE) count++
             return count
         }
 
@@ -241,7 +342,7 @@ class TimecodeBurnerTest {
             val outIndex = decoder.dequeueOutputBuffer(info, 10_000)
             if (outIndex >= 0) {
                 if (info.size > 0) {
-                    decoder.getOutputImage(outIndex)?.use { image -> frames += Frame(info.presentationTimeUs, lumaOf(image)) }
+                    decoder.getOutputImage(outIndex)?.use { image -> frames += Frame(info.presentationTimeUs, lumaOf(image), rednessOf(image)) }
                 }
                 if ((info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) outputDone = true
                 decoder.releaseOutputBuffer(outIndex, false)
@@ -259,6 +360,18 @@ class TimecodeBurnerTest {
         for (row in 0 until height) {
             for (col in 0 until width) {
                 out[row * width + col] = plane.buffer.get(row * plane.rowStride + col * plane.pixelStride)
+            }
+        }
+        return out
+    }
+
+    /** The V plane: 128 where the picture has no colour, far above that where it is red. */
+    private fun rednessOf(image: Image): ByteArray {
+        val plane = image.planes[2]
+        val out = ByteArray(width / 2 * (height / 2))
+        for (row in 0 until height / 2) {
+            for (col in 0 until width / 2) {
+                out[row * (width / 2) + col] = plane.buffer.get(row * plane.rowStride + col * plane.pixelStride)
             }
         }
         return out
@@ -289,6 +402,7 @@ class TimecodeBurnerTest {
 
     private companion object {
         const val WHITE = 200
+        const val RED = 165
         val CENTER = Region(240, 100, 400, 260)
         val MARKER = Region(10, 10, 70, 70)
         val OPPOSITE = Region(570, 10, 630, 70)

@@ -3,6 +3,7 @@ package com.precorderone.data
 import android.content.Context
 import androidx.camera.core.CameraSelector
 import androidx.preference.PreferenceManager
+import com.precorderone.camera.Corner
 
 class SettingsRepository(context: Context) {
     private val prefs = PreferenceManager.getDefaultSharedPreferences(context)
@@ -30,6 +31,14 @@ class SettingsRepository(context: Context) {
     fun burnTimecode(): Boolean = prefs.getBoolean(KEY_BURN_TIMECODE, true)
 
     fun setBurnTimecode(enabled: Boolean) = prefs.edit().putBoolean(KEY_BURN_TIMECODE, enabled).apply()
+
+    /** Where the timecode stands in the picture; top left unless changed. */
+    fun timecodeCorner(): Corner = Corner.of(prefs.getString(KEY_TIMECODE_CORNER, null))
+
+    fun setTimecodeCorner(corner: Corner) = prefs.edit().putString(KEY_TIMECODE_CORNER, corner.key).apply()
+
+    /** "Zeitlupe 8×" / "Zeitraffer 2×" in clips that do not play at the speed they were recorded at. */
+    fun showSpeedLabel(): Boolean = prefs.getBoolean(KEY_SPEED_LABEL, true)
 
     fun save(settings: PrecorderSettings) {
         prefs.edit()
@@ -61,5 +70,7 @@ class SettingsRepository(context: Context) {
         const val KEY_POST_ROLL = "post_roll"
         const val KEY_RECORD_AUDIO = "record_audio"
         const val KEY_BURN_TIMECODE = "burn_timecode"
+        const val KEY_TIMECODE_CORNER = "timecode_corner"
+        const val KEY_SPEED_LABEL = "speed_label"
     }
 }

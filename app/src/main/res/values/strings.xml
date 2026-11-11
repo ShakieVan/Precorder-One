@@ -17,7 +17,7 @@
     <string name="saved_success">Clip gespeichert</string>
     <string name="saved_open">Ansehen</string>
     <string name="saved_failed">Speichern fehlgeschlagen</string>
-    <string name="saved_without_timecode">Clip ohne Timecode gespeichert – das Einbrennen ist fehlgeschlagen</string>
+    <string name="saved_without_overlay">Clip ohne Einblendung gespeichert – das Einbrennen ist fehlgeschlagen</string>
     <string name="no_video_player">Keine App zum Abspielen gefunden</string>
     <string name="camera_permission_required">Ohne Kamera-Berechtigung kann Precorder-One nicht aufnehmen.</string>
     <string name="focus_failed">Fokus aktuell nicht verfügbar</string>
@@ -43,9 +43,14 @@
     <string name="pref_audio_summary">Nur in Echtzeit-Clips (Aufnahme- = Wiedergabe-Bildrate); bei Zeitlupe ohne Ton</string>
     <string name="pref_audio_denied">Ohne Mikrofon-Berechtigung kein Ton</string>
     <string name="pref_timecode_title">Timecode einbrennen</string>
-    <string name="pref_timecode_summary">Laufzeit des Clips als Min:Sek:Millisekunden unten links im Bild. Das Speichern dauert dadurch länger.</string>
+    <string name="pref_timecode_summary">Laufzeit des Clips als Min:Sek:Millisekunden im Bild. Das Speichern dauert dadurch länger.</string>
+    <string name="pref_timecode_corner_title">Timecode-Position</string>
+    <string name="pref_speed_label_title">Zeitlupe/Zeitraffer einblenden</string>
+    <string name="pref_speed_label_summary">„Zeitlupe 8ד oder „Zeitraffer 2ד mit blinkendem Punkt oben im Bild, wenn der Clip nicht in Originalgeschwindigkeit abgespielt wird. Das Speichern dauert dadurch länger.</string>
     <string name="quick_timecode">Timecode im Bild</string>
-    <string name="quick_timecode_on">Ein</string>
+    <!-- Ins Video eingebrannt; %1$s ist der Faktor, z. B. 8 oder 2,5 -->
+    <string name="overlay_slow_motion">Zeitlupe %1$s×</string>
+    <string name="overlay_time_lapse">Zeitraffer %1$s×</string>
     <string name="pref_keys_title">Auslösen mit Tasten</string>
     <string name="pref_keys_summary">Lautstärketasten, Bluetooth-Fernauslöser, Kamera- und Kopfhörertaste</string>
 

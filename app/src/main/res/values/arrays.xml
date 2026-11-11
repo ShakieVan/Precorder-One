@@ -47,6 +47,19 @@
         <item>60</item>
     </string-array>
 
+    <string-array name="corner_entries">
+        <item>Oben links</item>
+        <item>Oben rechts</item>
+        <item>Unten links</item>
+        <item>Unten rechts</item>
+    </string-array>
+    <string-array name="corner_values">
+        <item>top_left</item>
+        <item>top_right</item>
+        <item>bottom_left</item>
+        <item>bottom_right</item>
+    </string-array>
+
     <string-array name="lens_entries">
         <item>Rückkamera</item>
         <item>Frontkamera</item>

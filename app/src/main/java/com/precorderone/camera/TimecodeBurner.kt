@@ -33,10 +33,13 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
 import kotlin.math.ceil
+import kotlin.math.max
+import kotlin.math.min
 import kotlin.math.roundToInt
 
 /**
- * Burns the running time into a saved clip: decoder -> OpenGL (picture plus timecode) -> encoder -> MP4.
+ * Burns the running time and the speed label into a saved clip: decoder -> OpenGL (picture plus overlay) -> encoder
+ * -> MP4.
  *
  * This happens when a clip is saved, never while recording: the live path (camera -> encoder surface -> ring) stays
  * as lean as it is. The picture never leaves the graphics memory; only the compressed frames pass through the CPU.
@@ -46,14 +49,16 @@ internal object TimecodeBurner {
     private const val DEQUEUE_TIMEOUT_US = 10_000L
     private const val FRAME_WAIT_MS = 5_000L
     private const val STALL_TIMEOUT_MS = 15_000L
+    private const val LEVEL_5_2_MACROBLOCKS_PER_SECOND = 2_073_600
 
     /**
-     * Re-encodes [input] (a real-time clip as [ClipMuxer.write] makes it) into [output] with the timecode at the
-     * bottom left of the picture as it is shown with [orientationHint].
+     * Re-encodes [input] (a real-time clip as [ClipMuxer.write] makes it) into [output] with [overlay] in the
+     * corners of the picture as it is shown with [orientationHint].
      *
      * The timecode counts the recording time from the first frame. The clip itself is stretched by [timeScale]
-     * (recording fps / playback fps), so in slow motion the timecode runs slower than the playback. Sound is copied
-     * unchanged, and only at real-time speed. Throws on failure; [output] is then incomplete.
+     * (recording fps / playback fps), so in slow motion the timecode runs slower than the playback; the dot of the
+     * speed label blinks in the time of the playback. Sound is copied unchanged, and only at real-time speed.
+     * Throws on failure; [output] is then incomplete.
      */
     fun burn(
         input: File,
@@ -62,6 +67,7 @@ internal object TimecodeBurner {
         timeScale: Double,
         frameRate: Int,
         bitRate: Int,
+        overlay: ClipOverlay,
         onProgress: (Float) -> Unit = {}
     ) {
         val extractor = MediaExtractor()
@@ -98,7 +104,7 @@ internal object TimecodeBurner {
             val encoderSurface = encoder.createInputSurface().also { encoderSurfaceRef = it }
             encoder.start()
 
-            val stage = GlStage(encoderSurface, width, height, orientationHint).also { stageRef = it }
+            val stage = GlStage(encoderSurface, width, height, orientationHint, overlay).also { stageRef = it }
 
             // With a rotation in its format the decoder would turn the frames on their way to the surface. They have
             // to stay as stored; the turn remains a note in the new file, as in the original.
@@ -169,9 +175,10 @@ internal object TimecodeBurner {
                         if (render) {
                             if (firstPtsUs < 0) firstPtsUs = ptsUs
                             val clipUs = ptsUs - firstPtsUs
+                            val playbackUs = (clipUs * timeScale).toLong()
                             stage.awaitFrame()
-                            stage.draw(Timecode.glyphs(clipUs, glyphs))
-                            stage.present((clipUs * timeScale).toLong() * 1000L)
+                            stage.draw(Timecode.glyphs(clipUs, glyphs), SpeedLabel.dotVisible(playbackUs))
+                            stage.present(playbackUs * 1000L)
                             if (durationUs > 0) {
                                 val percent = (clipUs * 100 / durationUs).toInt().coerceIn(0, 100)
                                 if (percent != lastPercent) {
@@ -244,17 +251,27 @@ internal object TimecodeBurner {
         }
     }
 
-    private fun encoderFormat(source: MediaFormat, width: Int, height: Int, frameRate: Int, bitRate: Int): MediaFormat =
-        MediaFormat.createVideoFormat(MIME_TYPE, width, height).apply {
+    private fun encoderFormat(source: MediaFormat, width: Int, height: Int, frameRate: Int, bitRate: Int): MediaFormat {
+        // The frame rate is only what the encoder plans with; the pictures bring their own times. Planning with more
+        // macroblocks per second than H.264 level 5.2 allows makes the encoder pick level 6, and the one in the Galaxy
+        // S10 then fails on the first picture (4032x2268 played at 60 fps, a time lapse). So it plans with a rate
+        // inside level 5.2 and a bit rate lowered by the same share, which leaves every picture its bits. A clip
+        // saved without overlay is no different: recorded at 30 fps, played at 60.
+        val wantedRate = frameRate.coerceAtLeast(1)
+        val macroblocks = ((width + 15) / 16) * ((height + 15) / 16)
+        val plannedRate = min(wantedRate, LEVEL_5_2_MACROBLOCKS_PER_SECOND / macroblocks).coerceAtLeast(1)
+        val plannedBitRate = (bitRate.toLong() * plannedRate / wantedRate).toInt()
+        return MediaFormat.createVideoFormat(MIME_TYPE, width, height).apply {
             setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
-            setInteger(MediaFormat.KEY_BIT_RATE, bitRate)
-            setInteger(MediaFormat.KEY_FRAME_RATE, frameRate.coerceAtLeast(1))
+            setInteger(MediaFormat.KEY_BIT_RATE, plannedBitRate)
+            setInteger(MediaFormat.KEY_FRAME_RATE, plannedRate)
             setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
             // Same colours as the original: otherwise decoder and encoder may each assume another standard.
             listOf(MediaFormat.KEY_COLOR_STANDARD, MediaFormat.KEY_COLOR_RANGE, MediaFormat.KEY_COLOR_TRANSFER).forEach { key ->
                 if (source.containsKey(key)) setInteger(key, source.getInteger(key))
             }
         }
+    }
 
     internal fun trackIndex(extractor: MediaExtractor, mimePrefix: String): Int =
         (0 until extractor.trackCount).firstOrNull {
@@ -264,15 +281,24 @@ internal object TimecodeBurner {
     internal fun maxInputSize(format: MediaFormat, fallback: Int): Int =
         if (format.containsKey(MediaFormat.KEY_MAX_INPUT_SIZE)) format.getInteger(MediaFormat.KEY_MAX_INPUT_SIZE).coerceAtLeast(fallback) else fallback
 
-    /** Glyphs 0..9 and the colon side by side in one texture, plus a filled cell for the box behind the text. */
-    private class GlyphAtlas(textSize: Float) {
+    /** A piece of the atlas texture; v runs downwards, as the bitmap does. */
+    private class Cell(val u0: Float, val v0: Float, val u1: Float, val v1: Float)
+
+    /**
+     * Everything the overlay is drawn from, in one texture: the glyphs 0..9 and the colon side by side, a filled cell
+     * for the boxes behind the text and the dot; below them the speed label [label] in one piece, if there is one.
+     */
+    private class OverlayAtlas(textSize: Float, label: String?) {
         val digitWidth: Int
         val colonWidth: Int
         val glyphHeight: Int
+        val dotSize: Int
+        val labelWidth: Int
         val bitmap: Bitmap
-        val left = FloatArray(Timecode.COLON + 1)
-        val right = FloatArray(Timecode.COLON + 1)
-        val solid: Float
+        val glyphs: Array<Cell>
+        val solid: Cell
+        val dot: Cell
+        val label: Cell?
 
         init {
             // Monospace: every digit is equally wide, so the text does not wobble while it counts. It is also the one
@@ -287,19 +313,36 @@ internal object TimecodeBurner {
             glyphHeight = metrics.descent - metrics.ascent
             digitWidth = ceil((0..9).maxOf { paint.measureText(it.toString()) }).toInt()
             colonWidth = (digitWidth * 0.6f).roundToInt()
-            val width = 10 * (digitWidth + GAP) + colonWidth + GAP + SOLID_WIDTH
-            bitmap = Bitmap.createBitmap(width, glyphHeight, Bitmap.Config.ARGB_8888)
+            dotSize = SpeedLabel.dotSize(glyphHeight)
+            labelWidth = if (label != null) ceil(paint.measureText(label)).toInt() else 0
+            val firstRow = 10 * (digitWidth + GAP) + colonWidth + GAP + SOLID_WIDTH + GAP + dotSize
+            val width = max(firstRow, labelWidth)
+            val height = if (label != null) 2 * glyphHeight + GAP else glyphHeight
+            bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
             val canvas = Canvas(bitmap)
+            fun cell(x: Int, y: Int, cellWidth: Int, cellHeight: Int) =
+                Cell(x / width.toFloat(), y / height.toFloat(), (x + cellWidth) / width.toFloat(), (y + cellHeight) / height.toFloat())
+
             var x = 0
-            for (glyph in 0..Timecode.COLON) {
-                val cell = if (glyph == Timecode.COLON) colonWidth else digitWidth
-                canvas.drawText(if (glyph == Timecode.COLON) ":" else glyph.toString(), x + cell / 2f, -metrics.ascent.toFloat(), paint)
-                left[glyph] = x / width.toFloat()
-                right[glyph] = (x + cell) / width.toFloat()
-                x += cell + GAP
+            glyphs = Array(Timecode.COLON + 1) { glyph ->
+                val cellWidth = if (glyph == Timecode.COLON) colonWidth else digitWidth
+                canvas.drawText(if (glyph == Timecode.COLON) ":" else glyph.toString(), x + cellWidth / 2f, -metrics.ascent.toFloat(), paint)
+                cell(x, 0, cellWidth, glyphHeight).also { x += cellWidth + GAP }
             }
             canvas.drawRect(x.toFloat(), 0f, (x + SOLID_WIDTH).toFloat(), glyphHeight.toFloat(), paint)
-            solid = (x + SOLID_WIDTH / 2f) / width
+            // One point in the middle of the filled cell: a box has the same colour all over.
+            val solidU = (x + SOLID_WIDTH / 2f) / width
+            val solidV = glyphHeight / 2f / height
+            solid = Cell(solidU, solidV, solidU, solidV)
+            x += SOLID_WIDTH + GAP
+            canvas.drawCircle(x + dotSize / 2f, dotSize / 2f, dotSize / 2f, paint)
+            dot = cell(x, 0, dotSize, dotSize)
+            this.label = label?.let {
+                val top = glyphHeight + GAP
+                paint.textAlign = Paint.Align.LEFT
+                canvas.drawText(it, 0f, (top - metrics.ascent).toFloat(), paint)
+                cell(0, top, labelWidth, glyphHeight)
+            }
         }
 
         private companion object {
@@ -310,9 +353,15 @@ internal object TimecodeBurner {
 
     /**
      * The OpenGL step between decoder and encoder, bound to the thread that creates it: [decoderSurface] takes the
-     * decoded frames, [draw] paints the newest one with the timecode on the encoder's surface, [present] hands it over.
+     * decoded frames, [draw] paints the newest one with the overlay on the encoder's surface, [present] hands it over.
      */
-    private class GlStage(encoderSurface: Surface, private val width: Int, private val height: Int, orientationHint: Int) {
+    private class GlStage(
+        encoderSurface: Surface,
+        private val width: Int,
+        private val height: Int,
+        orientationHint: Int,
+        private val overlay: ClipOverlay
+    ) {
         private var display: EGLDisplay = EGL14.EGL_NO_DISPLAY
         private var context: EGLContext = EGL14.EGL_NO_CONTEXT
         private var eglSurface: EGLSurface = EGL14.EGL_NO_SURFACE
@@ -337,11 +386,12 @@ internal object TimecodeBurner {
                 1f, 1f, 1f, 1f
             )
         )
-        private val overlayVertices = floatBuffer(FloatArray((Timecode.LENGTH + 1) * VERTICES_PER_QUAD * FLOATS_PER_VERTEX))
+        private val overlayVertices = floatBuffer(FloatArray(MAX_OVERLAY_QUADS * VERTICES_PER_QUAD * FLOATS_PER_VERTEX))
         private val quad = FloatArray(VERTICES_PER_QUAD * FLOATS_PER_VERTEX)
         private val corners = FloatArray(8)
-        private lateinit var atlas: GlyphAtlas
-        private lateinit var layout: TimecodeLayout
+        private lateinit var atlas: OverlayAtlas
+        private var timecodeLayout: TimecodeLayout? = null
+        private var speedLayout: SpeedLabelLayout? = null
 
         init {
             try {
@@ -391,8 +441,13 @@ internal object TimecodeBurner {
             setTextureParameters(GLES11Ext.GL_TEXTURE_EXTERNAL_OES)
 
             val turned = orientationHint == 90 || orientationHint == 270
-            atlas = GlyphAtlas(Timecode.textSize(if (turned) height else width, if (turned) width else height))
-            layout = TimecodeLayout(width, height, orientationHint, atlas.digitWidth, atlas.colonWidth, atlas.glyphHeight)
+            atlas = OverlayAtlas(Timecode.textSize(if (turned) height else width, if (turned) width else height), overlay.speedLabel)
+            timecodeLayout = overlay.timecode?.let { corner ->
+                TimecodeLayout(width, height, orientationHint, corner, atlas.digitWidth, atlas.colonWidth, atlas.glyphHeight)
+            }
+            speedLayout = overlay.speedLabel?.let {
+                SpeedLabelLayout(width, height, orientationHint, overlay.speedCorner, atlas.labelWidth, atlas.dotSize, atlas.glyphHeight)
+            }
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, atlasTexture)
             setTextureParameters(GLES20.GL_TEXTURE_2D)
             GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, atlas.bitmap, 0)
@@ -424,7 +479,8 @@ internal object TimecodeBurner {
             surfaceTexture!!.updateTexImage()
         }
 
-        fun draw(glyphs: IntArray) {
+        /** Paints the current frame with the timecode [glyphs] and the speed label, its dot only if [dotVisible]. */
+        fun draw(glyphs: IntArray, dotVisible: Boolean) {
             surfaceTexture!!.getTransformMatrix(texMatrix)
             GLES20.glViewport(0, 0, width, height)
 
@@ -437,14 +493,40 @@ internal object TimecodeBurner {
             bindVertices(videoProgram, "aPosition", "aTexCoord", videoVertices)
             GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
 
-            // Box first, then the nine characters; only their place in the atlas changes from frame to frame.
+            // Boxes first, then all that is white, then the dot. From frame to frame only the cells of the timecode
+            // change, and whether the dot is there.
+            val timecode = timecodeLayout
+            val speed = speedLayout
+            val label = atlas.label
+            var boxes = 0
+            var whites = 0
+            var dots = 0
             overlayVertices.clear()
-            putQuad(layout.box, atlas.solid, atlas.solid)
-            for (slot in 0 until Timecode.LENGTH) {
-                layout.glyph(slot, corners)
-                putQuad(corners, atlas.left[glyphs[slot]], atlas.right[glyphs[slot]])
+            if (timecode != null) {
+                putQuad(timecode.box, atlas.solid)
+                boxes++
+            }
+            if (speed != null) {
+                putQuad(speed.box, atlas.solid)
+                boxes++
+            }
+            if (timecode != null) {
+                for (slot in 0 until Timecode.LENGTH) {
+                    timecode.glyph(slot, corners)
+                    putQuad(corners, atlas.glyphs[glyphs[slot]])
+                }
+                whites += Timecode.LENGTH
+            }
+            if (speed != null && label != null) {
+                putQuad(speed.text, label)
+                whites++
+                if (dotVisible) {
+                    putQuad(speed.dot, atlas.dot)
+                    dots++
+                }
             }
             overlayVertices.flip()
+            if (boxes == 0) return
 
             GLES20.glEnable(GLES20.GL_BLEND)
             // The atlas only carries coverage; colours are given premultiplied.
@@ -455,9 +537,13 @@ internal object TimecodeBurner {
             bindVertices(overlayProgram, "aPosition", "aUv", overlayVertices)
             val color = GLES20.glGetUniformLocation(overlayProgram, "uColor")
             GLES20.glUniform4f(color, 0f, 0f, 0f, BOX_ALPHA)
-            GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, VERTICES_PER_QUAD)
+            GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, boxes * VERTICES_PER_QUAD)
             GLES20.glUniform4f(color, 1f, 1f, 1f, 1f)
-            GLES20.glDrawArrays(GLES20.GL_TRIANGLES, VERTICES_PER_QUAD, Timecode.LENGTH * VERTICES_PER_QUAD)
+            GLES20.glDrawArrays(GLES20.GL_TRIANGLES, boxes * VERTICES_PER_QUAD, whites * VERTICES_PER_QUAD)
+            if (dots > 0) {
+                GLES20.glUniform4f(color, DOT_RED, DOT_GREEN, DOT_BLUE, 1f)
+                GLES20.glDrawArrays(GLES20.GL_TRIANGLES, (boxes + whites) * VERTICES_PER_QUAD, dots * VERTICES_PER_QUAD)
+            }
             checkGl("draw")
         }
 
@@ -485,8 +571,8 @@ internal object TimecodeBurner {
             callbackThread.quitSafely()
         }
 
-        /** [corners]: top left, top right, bottom left, bottom right; as two triangles with the atlas cell [u0]..[u1]. */
-        private fun putQuad(corners: FloatArray, u0: Float, u1: Float) {
+        /** [corners]: top left, top right, bottom left, bottom right; as two triangles filled with the atlas [cell]. */
+        private fun putQuad(corners: FloatArray, cell: Cell) {
             var offset = 0
             fun vertex(corner: Int, u: Float, v: Float) {
                 quad[offset++] = corners[corner * 2]
@@ -494,12 +580,12 @@ internal object TimecodeBurner {
                 quad[offset++] = u
                 quad[offset++] = v
             }
-            vertex(0, u0, 0f)
-            vertex(2, u0, 1f)
-            vertex(1, u1, 0f)
-            vertex(1, u1, 0f)
-            vertex(2, u0, 1f)
-            vertex(3, u1, 1f)
+            vertex(0, cell.u0, cell.v0)
+            vertex(2, cell.u0, cell.v1)
+            vertex(1, cell.u1, cell.v0)
+            vertex(1, cell.u1, cell.v0)
+            vertex(2, cell.u0, cell.v1)
+            vertex(3, cell.u1, cell.v1)
             overlayVertices.put(quad)
         }
 
@@ -556,6 +642,14 @@ internal object TimecodeBurner {
             const val FLOATS_PER_VERTEX = 4
             const val VERTICES_PER_QUAD = 6
             const val BOX_ALPHA = 0.5f
+
+            // Two boxes, the nine characters of the timecode, the speed label in one piece and its dot.
+            const val MAX_OVERLAY_QUADS = 2 + Timecode.LENGTH + 2
+
+            // The dot: a signal red that stands out from the white text.
+            const val DOT_RED = 1f
+            const val DOT_GREEN = 0.23f
+            const val DOT_BLUE = 0.19f
 
             fun floatBuffer(values: FloatArray): FloatBuffer =
                 ByteBuffer.allocateDirect(values.size * 4).order(ByteOrder.nativeOrder()).asFloatBuffer().apply {

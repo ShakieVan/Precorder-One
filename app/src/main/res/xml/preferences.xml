@@ -61,6 +61,23 @@
             app:key="burn_timecode"
             app:summary="@string/pref_timecode_summary"
             app:title="@string/pref_timecode_title" />
+
+        <ListPreference
+            app:defaultValue="top_left"
+            app:dependency="burn_timecode"
+            app:entries="@array/corner_entries"
+            app:entryValues="@array/corner_values"
+            app:iconSpaceReserved="false"
+            app:key="timecode_corner"
+            app:title="@string/pref_timecode_corner_title"
+            app:useSimpleSummaryProvider="true" />
+
+        <SwitchPreferenceCompat
+            app:defaultValue="true"
+            app:iconSpaceReserved="false"
+            app:key="speed_label"
+            app:summary="@string/pref_speed_label_summary"
+            app:title="@string/pref_speed_label_title" />
     </PreferenceCategory>
 
     <PreferenceCategory

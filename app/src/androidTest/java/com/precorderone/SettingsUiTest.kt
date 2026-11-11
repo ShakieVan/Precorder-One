@@ -10,6 +10,7 @@ import androidx.preference.SwitchPreferenceCompat
 import androidx.test.core.app.ActivityScenario
 import androidx.test.espresso.Espresso.onView
 import androidx.test.espresso.action.ViewActions.click
+import androidx.test.espresso.action.ViewActions.scrollTo
 import androidx.test.espresso.assertion.ViewAssertions.matches
 import androidx.test.espresso.matcher.RootMatchers.isDialog
 import androidx.test.espresso.matcher.ViewMatchers.isChecked
@@ -19,6 +20,7 @@ import androidx.test.espresso.matcher.ViewMatchers.withParent
 import androidx.test.espresso.matcher.ViewMatchers.withText
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.precorderone.camera.Corner
 import com.precorderone.data.SettingsRepository
 import com.precorderone.ui.SettingsActivity
 import org.hamcrest.Matchers.allOf
@@ -29,7 +31,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 
-/** The buffer lengths up to a minute and the timecode switch, in the settings and in the quick menu. */
+/** The buffer lengths up to a minute, the timecode with its corner and the speed label, in the settings and in the quick menu. */
 @ExperimentalCamera2Interop
 @RunWith(AndroidJUnit4::class)
 class SettingsUiTest {
@@ -51,11 +53,28 @@ class SettingsUiTest {
                     // On unless switched off, the same default the camera screen uses when it saves.
                     assertTrue(timecode!!.isChecked)
                     assertTrue(SettingsRepository(activity).burnTimecode())
+
+                    // Top left unless changed, and every corner on offer.
+                    val corner = fragment.findPreference<ListPreference>("timecode_corner")!!
+                    assertEquals("top_left", corner.value)
+                    assertEquals(Corner.values().map { it.key }, corner.entryValues.map { it.toString() })
+                    assertEquals(corner.entryValues.size, corner.entries.size)
+                    assertTrue(corner.isEnabled)
+                    assertEquals(Corner.TOP_LEFT, SettingsRepository(activity).timecodeCorner())
+                    val speedLabel = fragment.findPreference<SwitchPreferenceCompat>("speed_label")
+                    assertNotNull(speedLabel)
+                    assertTrue(speedLabel!!.isChecked)
+                    assertTrue(SettingsRepository(activity).showSpeedLabel())
                 }
                 onView(withText(R.string.pref_timecode_title)).check(matches(isDisplayed()))
                 LockedPhone.screenshot("settings")
                 onView(withText(R.string.pref_timecode_title)).perform(click())
                 assertFalse(SettingsRepository(context).burnTimecode())
+                scenario.onActivity { activity ->
+                    val fragment = activity.supportFragmentManager.fragments.filterIsInstance<PreferenceFragmentCompat>().single()
+                    // Without timecode there is no corner to choose.
+                    assertFalse(fragment.findPreference<ListPreference>("timecode_corner")!!.isEnabled)
+                }
             }
         }
     }
@@ -77,15 +96,21 @@ class SettingsUiTest {
                 }
                 LockedPhone.screenshot("quickmenu")
                 val inTimecodeRow = withParent(withId(R.id.timecodeGroup))
-                onView(allOf(withText(R.string.quick_timecode_on), inTimecodeRow)).inRoot(isDialog()).check(matches(isChecked()))
+                onView(allOf(withText("Oben links"), inTimecodeRow)).inRoot(isDialog()).check(matches(isChecked()))
 
                 val repository = SettingsRepository(context)
                 onView(withText("60 s")).inRoot(isDialog()).perform(click())
                 assertEquals(60, repository.load().loopSeconds)
 
+                onView(allOf(withText("Unten rechts"), inTimecodeRow)).inRoot(isDialog()).perform(scrollTo(), click())
+                assertEquals(Corner.BOTTOM_RIGHT, repository.timecodeCorner())
+                assertTrue(repository.burnTimecode())
+
                 // "Aus" exists twice, for the post-roll and for the timecode.
-                onView(allOf(withText(R.string.quick_post_roll_off), inTimecodeRow)).inRoot(isDialog()).perform(click())
+                onView(allOf(withText(R.string.quick_post_roll_off), inTimecodeRow)).inRoot(isDialog()).perform(scrollTo(), click())
                 assertFalse(repository.burnTimecode())
+                // The corner is kept for the next time the timecode is switched on.
+                assertEquals(Corner.BOTTOM_RIGHT, repository.timecodeCorner())
                 // Switching the timecode does not touch the recording settings.
                 assertEquals(60, repository.load().loopSeconds)
             }

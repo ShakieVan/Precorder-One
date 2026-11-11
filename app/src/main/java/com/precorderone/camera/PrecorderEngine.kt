@@ -861,20 +861,20 @@ class PrecorderEngine(private val context: Context) {
         }
     }
 
-    /** A saved clip, or [uri] null when saving failed. [timecodeMissing]: saved, but without the timecode asked for. */
-    class ExportResult(val uri: Uri?, val timecodeMissing: Boolean = false)
+    /** A saved clip, or [uri] null when saving failed. [overlayMissing]: saved, but without the overlay asked for. */
+    class ExportResult(val uri: Uri?, val overlayMissing: Boolean = false)
 
     /**
      * Saves the buffer as MP4. The leases are taken right here on the caller's thread, so pausing right after the
      * call (app sent to background during the post-roll) cannot reset the buffers under the running export.
      *
-     * With [burnTimecode] the clip is re-encoded with its running time in the picture, which takes a while:
-     * [onProgress] reports 0..1 of that. [onDone] is always called, on a background thread.
+     * With an [overlay] the clip is re-encoded with the timecode and the speed label in the picture, which takes a
+     * while: [onProgress] reports 0..1 of that. [onDone] is always called, on a background thread.
      */
     fun exportClip(
         settings: PrecorderSettings,
         deviceSurfaceRotation: Int,
-        burnTimecode: Boolean,
+        overlay: ClipOverlay,
         onProgress: (Float) -> Unit = {},
         onDone: (ExportResult) -> Unit
     ) {
@@ -906,8 +906,8 @@ class PrecorderEngine(private val context: Context) {
         }
         ioScope.launch {
             val result = try {
-                if (burnTimecode) {
-                    exportWithTimecode(lease, format, settings, orientationHint, audio, bitRate, releaseLeases, onProgress)
+                if (!overlay.isEmpty) {
+                    exportWithOverlay(lease, format, settings, orientationHint, audio, bitRate, overlay, releaseLeases, onProgress)
                 } else {
                     ExportResult(exportFrames(lease, format, settings, orientationHint, audio))
                 }
@@ -940,26 +940,27 @@ class PrecorderEngine(private val context: Context) {
     }
 
     /**
-     * Saves the clip with the timecode burnt in. Re-encoding takes far longer than the ring may be held, so the frames
+     * Saves the clip with [overlay] burnt in. Re-encoding takes far longer than the ring may be held, so the frames
      * first go into a real-time copy in the cache as they are, which is quick. That frees the ring ([releaseLeases])
      * and recording goes on without a hole while [TimecodeBurner] works from the copy. If burning fails the clip is
-     * still saved, without timecode.
+     * still saved, without the overlay.
      */
-    private fun exportWithTimecode(
+    private fun exportWithOverlay(
         lease: EncodedFrameRingBuffer.Lease,
         format: MediaFormat,
         settings: PrecorderSettings,
         orientationHint: Int,
         audio: ClipMuxer.AudioInput?,
         liveBitRate: Int,
+        overlay: ClipOverlay,
         releaseLeases: () -> Unit,
         onProgress: (Float) -> Unit
     ): ExportResult {
         val frames = ClipMuxer.framesToExport(lease) ?: return ExportResult(null)
         val copy = runCatching { writeRealTimeCopy(lease, frames, format, audio) }
-            .onFailure { Log.w(TAG, "No room for the copy to burn the timecode into", it) }
+            .onFailure { Log.w(TAG, "No room for the copy to burn the overlay into", it) }
             .getOrNull()
-            ?: return ExportResult(exportFrames(lease, format, settings, orientationHint, audio), timecodeMissing = true)
+            ?: return ExportResult(exportFrames(lease, format, settings, orientationHint, audio), overlayMissing = true)
         releaseLeases()
         try {
             val timeScale = timeScale(settings)
@@ -968,14 +969,18 @@ class PrecorderEngine(private val context: Context) {
                 .coerceIn(MIN_BIT_RATE.toLong(), MAX_BIT_RATE.toLong()).toInt()
             val startMs = SystemClock.elapsedRealtime()
             val burned = writeClip(settings) { fd ->
-                TimecodeBurner.burn(copy, fd, orientationHint, timeScale, settings.playbackFps, bitRate, onProgress)
+                TimecodeBurner.burn(copy, fd, orientationHint, timeScale, settings.playbackFps, bitRate, overlay, onProgress)
             }
             if (burned != null) {
-                Log.i(TAG, "TIMECODE burnt into ${frames.size} frames in ${SystemClock.elapsedRealtime() - startMs} ms at $bitRate bit/s")
+                Log.i(
+                    TAG,
+                    "OVERLAY burnt into ${frames.size} frames in ${SystemClock.elapsedRealtime() - startMs} ms at $bitRate bit/s: " +
+                        "timecode ${overlay.timecode?.key ?: "off"}, label ${overlay.speedLabel ?: "off"}"
+                )
                 return ExportResult(burned)
             }
             val plain = writeClip(settings) { fd -> ClipMuxer.copy(copy, fd, orientationHint, timeScale) }
-            return ExportResult(plain, timecodeMissing = true)
+            return ExportResult(plain, overlayMissing = true)
         } finally {
             copy.delete()
         }

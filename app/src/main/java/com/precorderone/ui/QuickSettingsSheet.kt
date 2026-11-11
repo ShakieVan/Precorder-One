@@ -10,6 +10,7 @@ import com.google.android.material.bottomsheet.BottomSheetDialog
 import com.google.android.material.chip.Chip
 import com.google.android.material.chip.ChipGroup
 import com.precorderone.R
+import com.precorderone.camera.Corner
 import com.precorderone.camera.FpsCatalog
 import com.precorderone.data.PrecorderSettings
 import com.precorderone.data.SettingsRepository
@@ -66,12 +67,14 @@ class QuickSettingsSheet(
             update(binding) { copy(postRollSeconds = it.toInt()) }
         }
         // Only read when a clip is saved: stored without restarting the camera, so the buffer stays filled.
-        val timecodeOptions = listOf(
-            "off" to context.getString(R.string.quick_post_roll_off),
-            "on" to context.getString(R.string.quick_timecode_on)
-        )
-        binding.timecodeGroup.fill(timecodeOptions, if (repository.burnTimecode()) "on" else "off") {
-            repository.setBurnTimecode(it == "on")
+        // Off, or the corner it stands in.
+        val cornerNames = context.resources.getStringArray(R.array.corner_entries)
+        val timecodeOptions = listOf(TIMECODE_OFF to context.getString(R.string.quick_post_roll_off)) +
+            context.resources.getStringArray(R.array.corner_values).mapIndexed { index, key -> key to cornerNames[index] }
+        val timecode = if (repository.burnTimecode()) repository.timecodeCorner().key else TIMECODE_OFF
+        binding.timecodeGroup.fill(timecodeOptions, timecode) {
+            repository.setBurnTimecode(it != TIMECODE_OFF)
+            if (it != TIMECODE_OFF) repository.setTimecodeCorner(Corner.of(it))
         }
         binding.aspectGroup.fill(ASPECTS.map { it to it }, settings.aspectRatio) {
             update(binding) { copy(aspectRatio = it) }
@@ -116,5 +119,6 @@ class QuickSettingsSheet(
         private val LOOP_SECONDS = listOf(5, 10, 30, 60)
         private val POST_ROLL_SECONDS = listOf(0, 1, 2, 3, 5)
         private val ASPECTS = listOf("16:9", "4:3")
+        private const val TIMECODE_OFF = "off"
     }
 }

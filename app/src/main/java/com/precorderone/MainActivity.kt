@@ -37,8 +37,10 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import com.google.android.material.snackbar.Snackbar
+import com.precorderone.camera.ClipOverlay
 import com.precorderone.camera.LensOption
 import com.precorderone.camera.PrecorderEngine
+import com.precorderone.camera.SpeedLabel
 import com.precorderone.data.PrecorderSettings
 import com.precorderone.data.SettingsRepository
 import com.precorderone.databinding.ActivityMainBinding
@@ -50,6 +52,7 @@ import com.precorderone.update.UpdateDialog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.text.DecimalFormatSymbols
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
@@ -513,8 +516,8 @@ class MainActivity : AppCompatActivity() {
         engine.exportClip(
             settings,
             currentPhysicalRotation,
-            burnTimecode = settingsRepository.burnTimecode(),
-            // Burning the timecode in takes a while for long clips: show how far it is.
+            overlay = clipOverlay(settings),
+            // Burning the overlay in takes a while for long clips: show how far it is.
             onProgress = { progress ->
                 runOnUiThread {
                     if (isSaving) {
@@ -528,18 +531,33 @@ class MainActivity : AppCompatActivity() {
                 isSaving = false
                 saveProgress = null
                 val uri = result.uri
-                if (uri != null) onClipSaved(uri, result.timecodeMissing) else showMessage(getString(R.string.saved_failed))
+                if (uri != null) onClipSaved(uri, result.overlayMissing) else showMessage(getString(R.string.saved_failed))
                 updateBufferUi()
             }
         }
     }
 
-    private fun onClipSaved(uri: Uri, timecodeMissing: Boolean) {
+    /** What the settings ask to burn into the clip that is saved now. */
+    private fun clipOverlay(settings: PrecorderSettings): ClipOverlay {
+        val timecode = if (settingsRepository.burnTimecode()) settingsRepository.timecodeCorner() else null
+        return ClipOverlay(timecode, if (settingsRepository.showSpeedLabel()) speedLabel(settings) else null)
+    }
+
+    /** "Zeitlupe 8×" or "Zeitraffer 2×"; nothing for a clip that plays at the speed it was recorded at. */
+    private fun speedLabel(settings: PrecorderSettings): String? {
+        val recordFps = settings.targetFps
+        val playbackFps = settings.playbackFps.coerceAtLeast(1)
+        if (recordFps == playbackFps) return null
+        val text = if (recordFps > playbackFps) R.string.overlay_slow_motion else R.string.overlay_time_lapse
+        return getString(text, SpeedLabel.factor(recordFps, playbackFps, DecimalFormatSymbols.getInstance().decimalSeparator))
+    }
+
+    private fun onClipSaved(uri: Uri, overlayMissing: Boolean) {
         lastClipUri = uri
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             binding.btnTrigger.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
         }
-        val message = if (timecodeMissing) R.string.saved_without_timecode else R.string.saved_success
+        val message = if (overlayMissing) R.string.saved_without_overlay else R.string.saved_success
         showMessage(getString(message), R.string.saved_open) { openLastClip() }
         showLastClip(uri)
     }

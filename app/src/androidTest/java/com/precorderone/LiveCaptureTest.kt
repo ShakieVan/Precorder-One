@@ -28,7 +28,8 @@ import org.junit.runner.RunWith
  * saved, so it shows whether recording really went on without a hole.
  *
  * Settings come from instrumentation arguments, e.g. -Pandroid.testInstrumentationRunnerArguments.loop=60:
- * loop (seconds), fps, playback, timecode (true/false), lens (back/front), audio (true/false), keep (true/false).
+ * loop (seconds), fps, playback, timecode (true/false), corner (top_left, top_right, bottom_left, bottom_right),
+ * label (true/false: "Zeitlupe 8×"), lens (back/front), audio (true/false), keep (true/false).
  * With keep=true the clips stay in DCIM/Precorder-One to look at them; otherwise the test removes them.
  * Timings go to logcat (tag LiveCaptureTest).
  */
@@ -47,6 +48,8 @@ class LiveCaptureTest {
         val fps = arguments.getString("fps")?.toInt() ?: 30
         val playback = arguments.getString("playback")?.toInt() ?: fps
         val timecode = arguments.getString("timecode")?.toBoolean() ?: true
+        val corner = arguments.getString("corner") ?: "top_left"
+        val label = arguments.getString("label")?.toBoolean() ?: true
         val lens = arguments.getString("lens") ?: "back"
         val audio = arguments.getString("audio")?.toBoolean() ?: false
         val keep = arguments.getString("keep")?.toBoolean() ?: false
@@ -62,6 +65,8 @@ class LiveCaptureTest {
             .remove("camera_id")
             .putBoolean("record_audio", audio)
             .putBoolean("burn_timecode", timecode)
+            .putString("timecode_corner", corner)
+            .putBoolean("speed_label", label)
             .commit()
 
         val saved = mutableListOf<Clip>()
@@ -74,7 +79,7 @@ class LiveCaptureTest {
                         "buffer not ready, status: ${status(scenario)}",
                         waitUntil((loop + 25) * 1000L) { status(scenario) == ready }
                     )
-                    Log.i(TAG, "READY after ${SystemClock.elapsedRealtime() - fillStart} ms (loop $loop s, $fps -> $playback fps, timecode $timecode, $lens camera, sound $audio)")
+                    Log.i(TAG, "READY after ${SystemClock.elapsedRealtime() - fillStart} ms (loop $loop s, $fps -> $playback fps, timecode $timecode $corner, label $label, $lens camera, sound $audio)")
 
                     val first = saveClip(scenario, "FIRST")
                     saved += first
